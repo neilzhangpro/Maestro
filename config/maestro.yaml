@@ -1,0 +1,24 @@
+linear:
+  api_key: $LINEAR_API_KEY
+  api_url: https://api.linear.app/graphql
+  project_slug: ""
+  team_id: ""
+  active_states:
+    - Todo
+    - In Progress
+  terminal_states:
+    - Done
+    - Cancelled
+    - Closed
+  timeout_s: 30
+
+workspace:
+  root: ./workspaces
+
+acp:
+  command: agent acp
+  permission_policy: allow-once
+  turn_timeout_ms: 3600000
+  client_name: maestro
+  client_version: 0.1.0
+  cursor_api_key: $CURSOR_API_KEY
