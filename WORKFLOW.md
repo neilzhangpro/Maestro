@@ -963,6 +963,41 @@ hooks:
     - The status names (`In Review`, `Done`, etc.) may differ between teams. Always call `list_issue_statuses` with the team name/ID if unsure.
     - If `update_issue` fails because of an invalid state name, fall back to listing available statuses and retry with the correct one.
     SKILL_EOF
+    cat > .cursor/mcp.json << 'MCP_EOF'
+    {
+      "mcpServers": {
+        "linear": {
+          "command": "npx",
+          "args": ["-y", "@linear/mcp-server"],
+          "env": {
+            "LINEAR_API_KEY": "${LINEAR_API_KEY}"
+          }
+        },
+        "playwright": {
+          "command": "npx",
+          "args": ["-y", "@playwright/mcp@latest"]
+        },
+        "github": {
+          "command": "npx",
+          "args": ["-y", "@modelcontextprotocol/server-github"],
+          "env": {
+            "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}"
+          }
+        },
+        "gitnexus": {
+          "command": "npx",
+          "args": ["-y", "gitnexus@latest", "mcp"]
+        },
+        "greptile": {
+          "type": "http",
+          "url": "https://api.greptile.com/mcp",
+          "headers": {
+            "Authorization": "Bearer ${GREPTILE_API_KEY}"
+          }
+        }
+      }
+    }
+    MCP_EOF
   before_run: ""
   after_run: ""
   before_remove: ""
