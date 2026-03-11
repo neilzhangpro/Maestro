@@ -22,6 +22,10 @@ dependencies = [
 dev = [
   "pytest>=8.2.0",
 ]
+sandbox = [
+  "opensandbox>=0.1.0",
+  "opensandbox-code-interpreter>=0.1.0",
+]
 
 [project.scripts]
 maestro = "maestro.cli:app"

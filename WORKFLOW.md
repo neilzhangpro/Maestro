@@ -999,7 +999,107 @@ hooks:
     }
     MCP_EOF
   before_run: ""
-  after_run: ""
+  after_run: |
+    python3 - << 'SANDBOX_EOF'
+    import subprocess, sys, pathlib, os, datetime, json
+
+    workspace = pathlib.Path(".")
+    results_file = workspace / "sandbox-test-results.txt"
+    fail_marker  = workspace / "SANDBOX_TEST_FAILED"
+    timestamp    = datetime.datetime.now().isoformat(timespec="seconds")
+
+    SKIP = {".venv", "venv", "__pycache__", ".git", ".mypy_cache",
+            ".ruff_cache", ".pytest_cache", "node_modules"}
+
+    def collect(pattern):
+        return [p for p in workspace.rglob(pattern)
+                if not any(s in p.parts for s in SKIP)]
+
+    test_files = collect("test_*.py") + collect("*_test.py")
+    if not test_files:
+        results_file.write_text(f"[{timestamp}] No test files found — skipping sandbox run.\n")
+        print("[sandbox-tests] No test files found — skipping.")
+        sys.exit(0)
+
+    print(f"[sandbox-tests] Found {len(test_files)} test file(s).")
+
+    sandbox_domain = os.environ.get("SANDBOX_DOMAIN", "").strip()
+    output = ""
+    passed = False
+    mode   = "local"
+
+    if sandbox_domain:
+        try:
+            from opensandbox import SandboxSync
+            from opensandbox.code_interpreter import CodeInterpreter
+
+            py_files = {}
+            for p in workspace.rglob("*.py"):
+                if any(s in p.parts for s in SKIP):
+                    continue
+                try:
+                    py_files[str(p.relative_to(workspace))] = p.read_text(errors="replace")
+                except Exception:
+                    pass
+
+            runner_code = (
+                "import sys, pathlib, pytest, tempfile\n"
+                "files = " + json.dumps(py_files) + "\n"
+                "with tempfile.TemporaryDirectory() as tmp:\n"
+                "    root = pathlib.Path(tmp)\n"
+                "    for rel, body in files.items():\n"
+                "        dest = root / rel\n"
+                "        dest.parent.mkdir(parents=True, exist_ok=True)\n"
+                "        dest.write_text(body)\n"
+                "    rc = pytest.main([str(root), '-v', '--tb=short', '-q', '--no-header'])\n"
+                "    code = rc.value if hasattr(rc, 'value') else int(rc)\n"
+                "    print('SANDBOX_EXIT=' + str(code))\n"
+            )
+
+            api_key = os.environ.get("SANDBOX_API_KEY", "")
+            sandbox = SandboxSync.create(
+                image="python:3.11-slim",
+                env={"PYTHONUNBUFFERED": "1"},
+            )
+            ci = CodeInterpreter(sandbox)
+            ci.run(
+                "import subprocess, sys; subprocess.run("
+                "[sys.executable, '-m', 'pip', 'install', 'pytest', '-q'], "
+                "capture_output=True)",
+                language="python",
+            )
+            result = ci.run(runner_code, language="python")
+            sandbox.close()
+
+            raw_out = (result.stdout or "") + ("\n" + result.stderr if result.stderr else "")
+            passed  = "SANDBOX_EXIT=0" in raw_out
+            output  = raw_out.replace("SANDBOX_EXIT=0", "").replace(
+                      "SANDBOX_EXIT=" + raw_out.split("SANDBOX_EXIT=")[-1][:2].strip(), "").strip()
+            mode    = "sandbox"
+
+        except ImportError:
+            print("[sandbox-tests] opensandbox not installed — falling back to local pytest.")
+        except Exception as exc:
+            print(f"[sandbox-tests] Sandbox error: {exc} — falling back to local pytest.")
+
+    if mode == "local":
+        proc   = subprocess.run(
+            [sys.executable, "-m", "pytest", ".", "-v", "--tb=short", "-q", "--no-header"],
+            capture_output=True, text=True, cwd=str(workspace),
+        )
+        output = proc.stdout + (proc.stderr or "")
+        passed = proc.returncode == 0
+
+    marker = "PASSED" if passed else "FAILED"
+    results_file.write_text(f"[{timestamp}] [{mode.upper()}] {marker}\n\n{output}")
+
+    if passed:
+        fail_marker.unlink(missing_ok=True)
+        print(f"[sandbox-tests] ✅ {marker} — sandbox-test-results.txt updated")
+    else:
+        fail_marker.write_text(f"Tests failed at {timestamp}\n")
+        print(f"[sandbox-tests] ❌ {marker} — check sandbox-test-results.txt")
+    SANDBOX_EOF
   before_remove: ""
   timeout_ms: 60000
 
@@ -1044,7 +1144,9 @@ You are working on issue **{{ issue.identifier }}: {{ issue.title }}**.
 2. Implement the changes described above.
 3. Write or update tests for your changes.
 4. Ensure all existing tests still pass.
-5. When finished, update the Linear issue state to **Human Review** so a human can verify your work.
+5. Check `sandbox-test-results.txt` if it exists — it contains results from the automated sandbox test runner that ran after the previous turn. If it shows `FAILED`, fix the reported errors before proceeding.
+6. If `SANDBOX_TEST_FAILED` file exists in the workspace root, tests have not yet passed — do not move to Human Review until it is gone.
+7. When finished and tests pass, update the Linear issue state to **Human Review** so a human can verify your work.
 
 ## Decision Policy
 - If you encounter a problem that requires human judgment (e.g., architectural decisions, ambiguous requirements, security-sensitive changes), **stop working and update the issue state to Human Review** with a comment explaining what decision is needed.
