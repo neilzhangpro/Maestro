@@ -75,6 +75,7 @@ class LinearConfig:
     api_url: str = "https://api.linear.app/graphql"
     project_slug: str | None = None
     team_id: str | None = None
+    assignee: str | None = None
     active_states: list[str] = None  # type: ignore[assignment]
     terminal_states: list[str] = None  # type: ignore[assignment]
     timeout_s: int = 30

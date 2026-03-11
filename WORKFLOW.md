@@ -3,6 +3,7 @@ tracker:
   kind: linear
   api_key: $LINEAR_API_KEY
   project_slug: ""
+  assignee: "me"
   active_states: [Todo, In Progress]
   terminal_states: [Done, Cancelled, Closed]
   handoff_states: [Human Review]

@@ -161,6 +161,7 @@ class LinearClient:
             project_slug=project_slug or self.config.project_slug,
             team_id=self.config.team_id,
             state_names=state_names or self.config.active_states,
+            assignee=self.config.assignee,
         )
         query = f"""
         query ListIssues($filter: IssueFilter) {{
@@ -198,6 +199,7 @@ class LinearClient:
             project_slug=self.config.project_slug,
             team_id=self.config.team_id,
             state_names=state_names,
+            assignee=self.config.assignee,
         )
         query = f"""
         query ListIssuesByStates($filter: IssueFilter) {{
@@ -286,6 +288,7 @@ class LinearClient:
         project_slug: str | None,
         team_id: str | None,
         state_names: list[str] | None,
+        assignee: str | None = None,
     ) -> dict[str, Any]:
         filter_data: dict[str, Any] = {}
         if project_slug:
@@ -294,6 +297,13 @@ class LinearClient:
             filter_data["team"] = {"id": {"eq": team_id}}
         if state_names:
             filter_data["state"] = {"name": {"in": state_names}}
+        if assignee:
+            if assignee.lower() == "me":
+                filter_data["assignee"] = {"isMe": {"eq": True}}
+            elif "@" in assignee:
+                filter_data["assignee"] = {"email": {"eq": assignee}}
+            else:
+                filter_data["assignee"] = {"id": {"eq": assignee}}
         return filter_data
 
     def _graphql(self, query: str, variables: dict[str, Any]) -> dict[str, Any]:

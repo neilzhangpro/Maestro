@@ -49,6 +49,7 @@ def trigger_run(body: TriggerRequest) -> dict[str, Any]:
         api_key=_config.tracker.api_key,
         api_url=_config.tracker.endpoint,
         project_slug=_config.tracker.project_slug or None,
+        assignee=_config.tracker.assignee,
         active_states=_config.tracker.active_states,
         terminal_states=_config.tracker.terminal_states,
         timeout_s=_config.tracker.timeout_s,

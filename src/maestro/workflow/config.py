@@ -90,6 +90,7 @@ class TrackerConfig:
     api_key: str
     endpoint: str = "https://api.linear.app/graphql"
     project_slug: str = ""
+    assignee: str | None = None
     active_states: list[str] = field(default_factory=lambda: ["Todo", "In Progress"])
     terminal_states: list[str] = field(
         default_factory=lambda: ["Done", "Cancelled", "Closed"],
@@ -190,6 +191,7 @@ def _parse_tracker(raw: dict[str, Any]) -> TrackerConfig:
             default="https://api.linear.app/graphql",
         ),
         project_slug=_str(raw.get("project_slug"), "tracker.project_slug", default=""),
+        assignee=_opt_str(raw.get("assignee")),
         active_states=_str_list(
             raw.get("active_states"), "tracker.active_states",
             default=["Todo", "In Progress"],

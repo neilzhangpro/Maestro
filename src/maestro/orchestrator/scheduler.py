@@ -361,6 +361,7 @@ class Scheduler:
             api_key=config.tracker.api_key,
             api_url=config.tracker.endpoint,
             project_slug=config.tracker.project_slug or None,
+            assignee=config.tracker.assignee,
             active_states=config.tracker.active_states,
             terminal_states=config.tracker.terminal_states,
             timeout_s=config.tracker.timeout_s,

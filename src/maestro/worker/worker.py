@@ -189,6 +189,7 @@ def _to_linear_config(t: TrackerConfig):
         api_key=t.api_key,
         api_url=t.endpoint,
         project_slug=t.project_slug or None,
+        assignee=t.assignee,
         active_states=t.active_states,
         terminal_states=t.terminal_states,
         timeout_s=t.timeout_s,
