@@ -94,6 +94,9 @@ class TrackerConfig:
     terminal_states: list[str] = field(
         default_factory=lambda: ["Done", "Cancelled", "Closed"],
     )
+    handoff_states: list[str] = field(
+        default_factory=lambda: ["Human Review"],
+    )
     timeout_s: int = 30
 
 
@@ -194,6 +197,10 @@ def _parse_tracker(raw: dict[str, Any]) -> TrackerConfig:
         terminal_states=_str_list(
             raw.get("terminal_states"), "tracker.terminal_states",
             default=["Done", "Cancelled", "Closed"],
+        ),
+        handoff_states=_str_list(
+            raw.get("handoff_states"), "tracker.handoff_states",
+            default=["Human Review"],
         ),
         timeout_s=_int(raw.get("timeout_s"), "tracker.timeout_s", default=30),
     )

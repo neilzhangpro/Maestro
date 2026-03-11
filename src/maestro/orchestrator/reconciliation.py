@@ -72,6 +72,7 @@ class Reconciler:
         state_map = {i.id: i.state for i in refreshed}
         terminal = {s.strip().lower() for s in self.config.tracker.terminal_states}
         active = {s.strip().lower() for s in self.config.tracker.active_states}
+        handoff = {s.strip().lower() for s in self.config.tracker.handoff_states}
 
         for issue_id in running_ids:
             current_state = state_map.get(issue_id)
@@ -88,6 +89,13 @@ class Reconciler:
                 )
                 if self._on_terminate:
                     self._on_terminate(issue_id, "terminal", cleanup=True)
+            elif normalized in handoff:
+                log.info(
+                    "Issue %s moved to handoff state '%s' — stopping worker, keeping workspace.",
+                    entry.identifier if entry else issue_id, current_state,
+                )
+                if self._on_terminate:
+                    self._on_terminate(issue_id, "handoff", cleanup=False)
             elif normalized in active:
                 if entry:
                     entry.issue_state = current_state

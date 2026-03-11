@@ -53,6 +53,10 @@ class AcpProcessError(AcpError):
     """Raised when the ACP process exits unexpectedly."""
 
 
+class AcpUserInputRequired(AcpError):
+    """Raised when the agent requests user input (hard failure per policy)."""
+
+
 @dataclass(slots=True, frozen=True)
 class AcpPromptResult:
     session_id: str
@@ -355,6 +359,14 @@ class _AcpRuntimeState:
 
     def _handle_server_message(self, message: dict[str, Any]) -> None:
         method = message.get("method")
+        if method in (
+            "item/tool/requestUserInput",
+            "session/request_user_input",
+        ):
+            log.warning("Agent requested user input via %s — raising hard failure.", method)
+            raise AcpUserInputRequired(
+                "Agent requested user input — hard failure per Symphony SPEC §10.5."
+            )
         if method == "session/update":
             update = message.get("params", {}).get("update", {})
             if (

@@ -75,4 +75,35 @@ def normalize_event(raw: dict[str, Any]) -> AgentEvent | None:
             duration_ms=raw.get("duration_ms", 0),
         )
 
+    if _is_user_input_required(raw):
+        return AgentEvent(
+            event="turn_input_required",
+            timestamp=now,
+            session_id=sid,
+            message="Agent requested user input — hard failure per policy.",
+        )
+
     return None
+
+
+def _is_user_input_required(raw: dict[str, Any]) -> bool:
+    """Detect any signal that the agent is waiting for human input.
+
+    Symphony SPEC §10.5: user-input-required events must not leave a run
+    stalled indefinitely.  Implementations should fail the run immediately.
+    """
+    method = raw.get("method", "")
+    if method in (
+        "item/tool/requestUserInput",
+        "session/request_user_input",
+    ):
+        return True
+
+    etype = raw.get("type", "")
+    subtype = raw.get("subtype", "")
+    if etype == "input_required" or subtype == "input_required":
+        return True
+    if etype == "result" and subtype == "input_required":
+        return True
+
+    return False

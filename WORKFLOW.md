@@ -5,6 +5,7 @@ tracker:
   project_slug: ""
   active_states: [Todo, In Progress]
   terminal_states: [Done, Cancelled, Closed]
+  handoff_states: [Human Review]
 
 polling:
   interval_ms: 30000
@@ -31,7 +32,7 @@ cursor:
 
 agent:
   max_concurrent_agents: 2
-  max_turns: 3
+  max_turns: 10
   max_retry_backoff_ms: 300000
   max_concurrent_agents_by_state: {}
 
@@ -60,6 +61,11 @@ You are working on issue **{{ issue.identifier }}: {{ issue.title }}**.
 2. Implement the changes described above.
 3. Write or update tests for your changes.
 4. Ensure all existing tests still pass.
+5. When finished, update the Linear issue state to **Human Review** so a human can verify your work.
+
+## Decision Policy
+- If you encounter a problem that requires human judgment (e.g., architectural decisions, ambiguous requirements, security-sensitive changes), **stop working and update the issue state to Human Review** with a comment explaining what decision is needed.
+- Do NOT ask for user input. If you cannot proceed autonomously, hand off to a human.
 
 {% if attempt %}
 ## Retry Context

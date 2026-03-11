@@ -188,8 +188,9 @@ class Scheduler:
 
         active = {s.strip().lower() for s in self.config.tracker.active_states}
         terminal = {s.strip().lower() for s in self.config.tracker.terminal_states}
+        handoff = {s.strip().lower() for s in self.config.tracker.handoff_states}
         normalized = issue.state.strip().lower()
-        if normalized not in active or normalized in terminal:
+        if normalized not in active or normalized in terminal or normalized in handoff:
             return False
 
         if normalized == "todo" and issue.blocked_by:

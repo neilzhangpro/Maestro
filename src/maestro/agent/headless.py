@@ -20,7 +20,7 @@ from typing import Any, Callable
 
 import httpx
 
-from maestro.agent.events import AgentEvent, normalize_event
+from maestro.agent.events import AgentEvent, normalize_event, _is_user_input_required
 from maestro.workflow.config import CursorConfig
 
 log = logging.getLogger(__name__)
@@ -215,6 +215,15 @@ class HeadlessRunner:
                     duration_ms=event.get("duration_ms", 0),
                     success=(event.get("subtype") == "success"),
                     output_text="".join(output_parts),
+                )
+
+            if _is_user_input_required(event):
+                log.warning("Agent requested user input — killing process (hard failure).")
+                process.kill()
+                return TurnResult(
+                    session_id=session_id, duration_ms=0,
+                    success=False, output_text="".join(output_parts),
+                    error="turn_input_required",
                 )
 
             if self._check_stall(last_activity, stall_timeout_s):
