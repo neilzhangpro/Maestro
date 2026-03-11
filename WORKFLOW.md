@@ -30,7 +30,7 @@ cursor:
   stall_timeout_ms: 300000
 
 agent:
-  max_concurrent_agents: 5
+  max_concurrent_agents: 2
   max_turns: 3
   max_retry_backoff_ms: 300000
   max_concurrent_agents_by_state: {}
