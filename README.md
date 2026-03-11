@@ -55,8 +55,9 @@ Maestro is designed for that layer.
 - Inject **global Cursor rules** (code quality, style, testing, plan-before-coding) and **project Skills** (git, PR, CI, Linear) into every workspace
 - Configure **5 MCPs** (Linear, Playwright, GitHub, GitNexus, Greptile) in every agent workspace
 - Run tests in an isolated **OpenSandbox Code Interpreter** after each turn and feed results back to the agent
-- **CI Watcher** — monitors GitHub CI status for issues in `In Review` state; auto-transitions to `Done` on success or back to `In Progress` on failure for automated fix
-- **E2E Test gate** — TUI provides a `🧪 E2E Test` panel for human end-to-end testing before marking issues as Done
+- **Draft PR workflow** — PRs are created as drafts; only converted to ready for review after human E2E testing passes
+- **CI Watcher** — monitors GitHub CI status for issues in `In Review` state; auto-transitions to `Human Review` on success or back to `In Progress` on failure for automated fix
+- **E2E Test gate** — TUI provides a `🧪 E2E Test` panel for human end-to-end testing; on pass, converts draft PR to ready and marks issue Done
 - Human-in-the-loop via `Human Review` handoff state — agent pauses, workspace preserved
 - Portable Docker deployment — cursor-agent CLI downloaded automatically at build time
 - Terminal workbench (`make tui`) for real-time monitoring, issue management, and E2E testing
@@ -204,19 +205,23 @@ only picks up issues assigned to you.
 ## Workflow Lifecycle
 
 ```text
-Linear Todo ──► In Progress ──► PR Created ──► In Review ──► Human Review ──► Done
-                     ▲                              │              │
-                     │                              ▼              ▼
-                     └──── CI Fail (auto-fix) ◄── CI Watcher    E2E Test
-                                                                   │
-                                                         Fail ─► In Progress
+Linear Todo ──► In Progress ──► Draft PR ──► In Review ──► Human Review ──► Done
+                     ▲                            │              │
+                     │                            ▼              ▼
+                     └──── CI Fail (auto-fix) ◄─ CI Watcher    E2E Test
+                                                                 │  │
+                                                           Pass ─┘  └─ Fail
+                                                    PR → Ready       ↓
+                                                    Issue → Done   In Progress
 ```
 
 1. **Scheduler** picks up `Todo` issues from Linear and dispatches them to workers
 2. **Worker** runs the Cursor agent through multi-turn execution (plan → code → test → PR)
-3. Agent creates a PR and moves the issue to **In Review**
+3. Agent creates a **draft PR** and moves the issue to **In Review** — the PR stays in draft throughout CI and review
 4. **CI Watcher** monitors GitHub CI; on success, transitions to **Human Review**; on failure, moves back to **In Progress** for automated fix
-5. **TUI E2E Test** provides a manual quality gate in `Human Review` — Pass moves to **Done**, Fail moves back to **In Progress**
+5. **TUI E2E Test** provides a manual quality gate in `Human Review`:
+   - **Pass**: converts the draft PR to **ready for review**, then moves the issue to **Done**
+   - **Fail**: records failure details, moves back to **In Progress** for the agent to fix
 
 ## Human-in-the-Loop
 
@@ -228,7 +233,7 @@ it moves the Linear issue to **Human Review** state. Maestro:
 3. Does not reschedule until the issue moves back to an active state
 
 The TUI provides an **E2E Test** action for issues in Human Review:
-- **Pass**: marks the issue as Done with a success comment on Linear
+- **Pass**: converts the draft PR to ready for review, marks the issue as Done, and adds a success comment on Linear
 - **Fail**: records the failure reason, adds a comment to Linear, and moves the issue back to In Progress for the agent to automatically fix
 
 ## Philosophy
@@ -239,8 +244,38 @@ turns it into a reliable part of software delivery.
 
 That system is the harness.
 
+## Roadmap
+
+### Multi-Runner Architecture
+
+Maestro currently uses **Cursor ACP** as its sole agent execution backend.
+The architecture is designed to evolve into a multi-runner system where different
+LLM backends can be used interchangeably:
+
+| Runner | Status | Description |
+|--------|--------|-------------|
+| **Cursor ACP** | Stable | Current default. Headless CLI with `stream-json` output, multi-turn sessions, MCP support. |
+| **Claude Code** | Planned | Anthropic's CLI agent (`claude -p --output-format stream-json`). Similar event protocol to Cursor, native tool use, no MCP config needed. Will be implemented as a `ClaudeCodeRunner` sharing the same `AgentRunner` protocol. |
+| **Codex CLI** | Planned | OpenAI's open-source CLI agent (`codex --full-auto`). Runs locally with sandboxed execution. Will require adapter for its distinct event format and approval model. |
+
+**Implementation plan:**
+
+1. **Runner Abstraction Layer** — Extract the current `HeadlessRunner` into a `Protocol`-based `AgentRunner` interface with `run_turn()`, `cancel()`, and `kill_current_process()` methods
+2. **Runner Registry** — Configuration-driven runner selection via `WORKFLOW.md` (`cursor.runner: cursor | claude-code | codex`)
+3. **Event Normalization** — Each runner adapts its native event stream to a common `AgentEvent` format already used internally
+4. **Auth & Environment** — Per-runner credential management (Cursor API key, Anthropic API key, OpenAI API key)
+5. **MCP Compatibility** — Cursor and Claude Code both support MCPs natively; Codex will need tool bridging
+
+### Other Planned Enhancements
+
+- **Webhook-driven CI** — Replace polling-based CI Watcher with GitHub webhook receiver for instant state transitions
+- **Workspace snapshots** — Persist workspace state between runs for faster resumption
+- **Multi-repo support** — Handle issues that span multiple repositories
+- **Metrics & analytics** — Agent success rate, time-to-completion, cost tracking dashboard
+- **Team collaboration** — Multi-user TUI with role-based access and shared visibility
+
 ## Status
 
 **v0.3.0** — Maestro is a complete harness engineering platform for autonomous
-software delivery, with CI monitoring, E2E testing gates, dual-model strategy,
-and robust Git synchronization.
+software delivery, with CI monitoring, E2E testing gates, draft PR workflow,
+dual-model strategy, and robust Git synchronization.

@@ -59,6 +59,7 @@ LOGO = r"""[cyan]
 ACTIONS_ALL = [
     "↻  Refresh",
     "▶  Run issue",
+    "🛑 Stop worker",
     "⇄  Move issue",
     "🔍 Issue detail",
     "🧪 E2E Test",
@@ -299,6 +300,59 @@ def action_run_issue(
     _pause()
 
 
+def action_stop_worker(
+    console: Console,
+    client: MaestroAPIClient,
+    orch: dict,
+) -> None:
+    """Stop a running worker."""
+    running = orch.get("running", [])
+    if not running:
+        console.print("[yellow]No workers currently running.[/yellow]")
+        _pause()
+        return
+
+    choices = []
+    for w in running:
+        ident = w.get("issue_identifier", "?")
+        sid = (w.get("session_id") or "")[:8] or "—"
+        turn = w.get("turn_count", 0)
+        evt = (w.get("last_message") or w.get("last_event") or "")[:40]
+        started = w.get("started_at")
+        uptime = ""
+        if started:
+            try:
+                dt = datetime.fromisoformat(started.replace("Z", "+00:00"))
+                uptime = _elapsed((datetime.now(timezone.utc) - dt).total_seconds())
+            except (ValueError, TypeError):
+                pass
+        choices.append(f"{ident}  turn={turn}  {uptime}  {evt}")
+
+    answer = questionary.select(
+        "Select worker to stop:", choices=choices, style=PROMPT_STYLE,
+    ).ask()
+    if not answer:
+        return
+
+    ref = answer.split()[0]
+
+    confirm = questionary.confirm(
+        f"Stop worker for {ref}? The agent subprocess will be killed.",
+        default=False,
+        style=PROMPT_STYLE,
+    ).ask()
+    if not confirm:
+        return
+
+    try:
+        client.cancel_worker(ref)
+        console.print(f"[red]✓ Cancel requested for {ref}[/red]")
+    except Exception as exc:
+        console.print(f"[red]Error: {exc}[/red]")
+
+    _pause()
+
+
 def action_move_issue(
     console: Console,
     client: MaestroAPIClient,
@@ -463,10 +517,18 @@ def action_e2e_test(
 
     if "Pass" in verdict:
         try:
+            try:
+                result = client.mark_pr_ready(ref)
+                pr_num = result.get("pr_number", "?")
+                console.print(f"[green]✓ Draft PR #{pr_num} marked as ready for review[/green]")
+            except Exception as pr_exc:
+                console.print(f"[yellow]⚠ Could not mark PR as ready: {pr_exc}[/yellow]")
+
             client.set_state(ref, "Done")
             client.add_comment(
                 ref,
-                "**E2E Test Passed** ✅\n\nManual end-to-end testing completed successfully. Moving to Done.",
+                "**E2E Test Passed** ✅\n\nManual end-to-end testing completed successfully. "
+                "Draft PR has been marked as ready for review. Moving to Done.",
             )
             console.print(f"[green]✓ {ref} → Done (E2E passed)[/green]")
         except Exception as exc:
@@ -549,6 +611,8 @@ def run_tui(url: str = "http://127.0.0.1:8080") -> None:
 
             if "Run issue" in choice:
                 action_run_issue(console, client, issues, orch)
+            elif "Stop worker" in choice:
+                action_stop_worker(console, client, orch)
             elif "Move issue" in choice:
                 action_move_issue(console, client, issues)
             elif "Issue detail" in choice:

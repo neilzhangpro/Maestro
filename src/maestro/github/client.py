@@ -190,6 +190,48 @@ class GitHubClient:
             log.warning("Failed to fetch failure logs for %s", ref, exc_info=True)
             return "Failed to retrieve CI failure logs."
 
+    def mark_pr_ready_for_review(
+        self, owner: str, repo: str, pr_number: int,
+    ) -> bool:
+        """Convert a draft PR to ready for review using the GraphQL API."""
+        try:
+            node_id = self._get_pr_node_id(owner, repo, pr_number)
+            if not node_id:
+                log.warning("Could not get node ID for PR #%d", pr_number)
+                return False
+
+            resp = self._client.post(
+                "https://api.github.com/graphql",
+                json={
+                    "query": """
+                        mutation MarkReady($id: ID!) {
+                          markPullRequestReadyForReview(input: {pullRequestId: $id}) {
+                            pullRequest { number state }
+                          }
+                        }
+                    """,
+                    "variables": {"id": node_id},
+                },
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if data.get("errors"):
+                log.warning("GraphQL errors marking PR ready: %s", data["errors"])
+                return False
+            log.info("PR #%d marked as ready for review.", pr_number)
+            return True
+        except Exception:
+            log.warning("Failed to mark PR #%d as ready for review", pr_number, exc_info=True)
+            return False
+
+    def _get_pr_node_id(self, owner: str, repo: str, pr_number: int) -> str | None:
+        try:
+            resp = self._client.get(f"/repos/{owner}/{repo}/pulls/{pr_number}")
+            resp.raise_for_status()
+            return resp.json().get("node_id")
+        except Exception:
+            return None
+
     @staticmethod
     def _parse_pr(data: dict[str, Any]) -> PRInfo:
         head = data.get("head", {})

@@ -16,6 +16,7 @@ class RunningEntry:
     identifier: str
     issue_state: str
     worker_thread: threading.Thread | None = None
+    worker_ref: Any | None = None
     session_id: str | None = None
     turn_count: int = 0
     last_event: str | None = None

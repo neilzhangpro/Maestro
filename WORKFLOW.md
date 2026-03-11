@@ -576,7 +576,7 @@ hooks:
       "head": "<current-branch>",
       "base": "main",
       "body": "<generated PR body>",
-      "draft": false
+      "draft": true
     }
     ```
 
@@ -946,8 +946,8 @@ hooks:
 
     | PR Event | Target Linear Status |
     |----------|---------------------|
-    | PR created, CI pending | `In Review` |
-    | PR created, CI passed | `In Review` |
+    | Draft PR created, CI pending | `In Review` |
+    | Draft PR created, CI passed | `In Review` |
     | PR merged | `Done` |
 
     - If the issue is already in the target status, skip the update.

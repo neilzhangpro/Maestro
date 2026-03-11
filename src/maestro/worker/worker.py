@@ -10,6 +10,7 @@ A Worker runs in its own thread, managed by the Orchestrator.  It:
 from __future__ import annotations
 
 import logging
+import threading
 from pathlib import Path
 from typing import Callable
 
@@ -45,6 +46,7 @@ class Worker:
         self.attempt = attempt
         self._on_event = on_event
         self._on_exit = on_exit
+        self._cancel_event = threading.Event()
 
         hooks = ShellHooks(
             after_create_script=config.hooks.after_create,
@@ -55,6 +57,12 @@ class Worker:
         )
         self._workspace_mgr = WorkspaceManager(config.workspace.root, hooks=hooks)
         self._runner = HeadlessRunner(config.cursor)
+
+    def cancel(self) -> None:
+        """Request cancellation — kills the agent subprocess and stops the run loop."""
+        log.info("Worker %s: cancel requested.", self.issue.identifier)
+        self._cancel_event.set()
+        self._runner.kill_current_process()
 
     def run(self) -> None:
         """Main entry point — runs in a dedicated thread."""
@@ -70,6 +78,12 @@ class Worker:
             max_turns = self.config.agent.max_turns
 
             for turn in range(1, max_turns + 1):
+                if self._cancel_event.is_set():
+                    log.info("Worker %s: cancelled before turn %d.", identifier, turn)
+                    self._run_after_hook(workspace.path)
+                    self._on_exit(issue_id, "abnormal", "cancelled_by_user")
+                    return
+
                 log.info(
                     "Worker %s: turn %d/%d (session=%s)",
                     identifier, turn, max_turns, session_id or "new",
@@ -85,6 +99,7 @@ class Worker:
                     resume_session_id=session_id,
                     on_event=lambda e, iid=issue_id: self._on_event(iid, e),
                     model_override=model_override,
+                    cancel_event=self._cancel_event,
                 )
 
                 if not session_id:

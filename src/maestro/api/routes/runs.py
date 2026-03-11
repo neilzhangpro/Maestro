@@ -68,6 +68,24 @@ def trigger_run(body: TriggerRequest) -> dict[str, Any]:
     return {"status": "dispatched", "issue": body.issue_id}
 
 
+@router.delete("/{issue_id}")
+def cancel_run(issue_id: str) -> dict[str, Any]:
+    """Cancel a running worker by issue ID or identifier (e.g. NOV-300)."""
+    if _scheduler is None or _config is None:
+        raise HTTPException(500, "Server not initialised")
+
+    resolved_id = issue_id
+    for entry in _scheduler.state.running.values():
+        if entry.identifier == issue_id:
+            resolved_id = entry.issue_id
+            break
+
+    if not _scheduler.cancel_worker(resolved_id):
+        raise HTTPException(404, f"No running worker found for '{issue_id}'.")
+
+    return {"status": "cancel_requested", "issue": issue_id}
+
+
 @router.get("")
 def list_runs() -> list[dict[str, Any]]:
     if _run_manager is None:

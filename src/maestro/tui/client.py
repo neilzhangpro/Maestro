@@ -46,5 +46,15 @@ class MaestroAPIClient:
             json={"body": body},
         ).raise_for_status().json()
 
+    def cancel_worker(self, issue_id: str) -> dict[str, Any]:
+        return self._http.delete(
+            f"/api/runs/{issue_id}",
+        ).raise_for_status().json()
+
+    def mark_pr_ready(self, issue_ref: str) -> dict[str, Any]:
+        return self._http.post(
+            f"/api/issues/{issue_ref}/mark-pr-ready",
+        ).raise_for_status().json()
+
     def close(self) -> None:
         self._http.close()

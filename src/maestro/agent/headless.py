@@ -44,6 +44,8 @@ class HeadlessRunner:
 
     def __init__(self, config: CursorConfig) -> None:
         self.config = config
+        self._process: subprocess.Popen[str] | None = None
+        self._process_lock = threading.Lock()
 
     def run_turn(
         self,
@@ -53,6 +55,7 @@ class HeadlessRunner:
         resume_session_id: str | None = None,
         on_event: Callable[[AgentEvent], None] | None = None,
         model_override: str | None = None,
+        cancel_event: threading.Event | None = None,
     ) -> TurnResult:
         cmd = self._build_command(workspace, prompt, resume_session_id, model_override)
         env = self._build_env()
@@ -69,8 +72,22 @@ class HeadlessRunner:
             env=env,
             cwd=str(workspace),
         )
+        with self._process_lock:
+            self._process = process
 
-        return self._stream_until_done(process, on_event)
+        try:
+            return self._stream_until_done(process, on_event, cancel_event)
+        finally:
+            with self._process_lock:
+                self._process = None
+
+    def kill_current_process(self) -> None:
+        """Kill the currently running agent subprocess (if any)."""
+        with self._process_lock:
+            proc = self._process
+        if proc and proc.poll() is None:
+            log.info("Killing agent subprocess pid=%d", proc.pid)
+            proc.kill()
 
     # ------------------------------------------------------------------
     # Command construction
@@ -175,6 +192,7 @@ class HeadlessRunner:
         self,
         process: subprocess.Popen[str],
         on_event: Callable[[AgentEvent], None] | None,
+        cancel_event: threading.Event | None = None,
     ) -> TurnResult:
         session_id = ""
         last_activity = time.monotonic()
@@ -245,6 +263,15 @@ class HeadlessRunner:
                     session_id=session_id, duration_ms=0,
                     success=False, output_text="".join(output_parts),
                     error="turn_timeout",
+                )
+
+            if cancel_event and cancel_event.is_set():
+                log.warning("Cancel requested — killing process.")
+                process.kill()
+                return TurnResult(
+                    session_id=session_id, duration_ms=0,
+                    success=False, output_text="".join(output_parts),
+                    error="cancelled_by_user",
                 )
 
         self._wait_process(process)

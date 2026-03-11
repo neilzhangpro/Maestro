@@ -216,6 +216,17 @@ class Scheduler:
     # Dispatch (SPEC §16.4)
     # ------------------------------------------------------------------
 
+    def cancel_worker(self, issue_id: str) -> bool:
+        """Cancel a running worker by issue ID. Returns True if a worker was found."""
+        entry = self.state.running.get(issue_id)
+        if not entry:
+            return False
+        if entry.worker_ref and hasattr(entry.worker_ref, "cancel"):
+            entry.worker_ref.cancel()
+            log.info("Cancel requested for worker %s", entry.identifier)
+            return True
+        return False
+
     def _dispatch_issue(self, issue: Issue, attempt: int | None) -> None:
         log.info("Dispatching: %s (attempt=%s)", issue.identifier, attempt)
 
@@ -240,6 +251,7 @@ class Scheduler:
             daemon=True,
         )
         entry.worker_thread = thread
+        entry.worker_ref = worker
         self.state.add_running(entry)
         thread.start()
 
