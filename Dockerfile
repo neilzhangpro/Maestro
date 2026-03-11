@@ -15,22 +15,15 @@ COPY WORKFLOW.md ./
 COPY config/ config/
 
 # ---------------------------------------------------------------
-# Cursor agent CLI
+# Cursor agent CLI — downloaded from official Cursor distribution
 #
-# Option A (recommended): install at build time
-#   docker build --build-arg INSTALL_CURSOR_CLI=1 -t maestro .
-#
-# Option B: mount host CLI into the container at runtime
-#   docker run -v $HOME/.local/share/cursor-agent:/opt/cursor-agent ...
-#
-# The entrypoint adds /opt/cursor-agent/current to PATH automatically.
+# Override version at build time:
+#   docker build --build-arg CURSOR_AGENT_VERSION=2026.02.27-e7d2ef6 .
 # ---------------------------------------------------------------
-ARG INSTALL_CURSOR_CLI=0
+ARG CURSOR_AGENT_VERSION=2026.02.27-e7d2ef6
 COPY scripts/install-cursor-cli.sh /tmp/install-cursor-cli.sh
 RUN chmod +x /tmp/install-cursor-cli.sh && \
-    if [ "$INSTALL_CURSOR_CLI" = "1" ]; then \
-        /tmp/install-cursor-cli.sh; \
-    fi && \
+    CURSOR_AGENT_VERSION=${CURSOR_AGENT_VERSION} /tmp/install-cursor-cli.sh && \
     rm -f /tmp/install-cursor-cli.sh
 
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh

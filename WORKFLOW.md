@@ -3,6 +3,7 @@ tracker:
   kind: linear
   api_key: $LINEAR_API_KEY
   project_slug: ""
+  team_id: "978fa11d-5b2d-41e1-9aa3-28e350d45529"
   assignee: "me"
   active_states: [Todo, In Progress]
   terminal_states: [Done, Cancelled, Closed]

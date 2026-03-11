@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import signal
 import threading
 from pathlib import Path
@@ -88,11 +89,13 @@ class MaestroService:
 
             app, run_manager = create_app(config, self._scheduler)
             self._run_manager = run_manager
-            uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
+            host = os.environ.get("MAESTRO_HTTP_HOST", "0.0.0.0")
+            uvicorn.run(app, host=host, port=port, log_level="warning")
 
         self._http_thread = threading.Thread(target=_run_server, daemon=True)
         self._http_thread.start()
-        log.info("HTTP API listening on http://127.0.0.1:%d", port)
+        host = os.environ.get("MAESTRO_HTTP_HOST", "0.0.0.0")
+        log.info("HTTP API listening on http://%s:%d", host, port)
 
     def _register_signals(self) -> None:
         def handler(signum, frame):

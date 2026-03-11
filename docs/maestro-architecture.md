@@ -1,221 +1,253 @@
-# Maestro 项目架构讨论
+# Maestro Architecture
 
-> 基于 Symphony SPEC、Cursor ACP、Linear MCP 的架构设计文档，供后续开发参考。
-
-## 一、需求与 Symphony 的对应关系
-
-| 你的需求 | Symphony 对应 | 差异/适配 |
-|---------|---------------|-----------|
-| 无需 AI IDE | ✅ 无 IDE 依赖 | Symphony 用 Codex app-server，你计划用 Cursor CLI |
-| Linear 任务管理 | ✅ 原生支持 | 可直接复用 |
-| 任务编排 | ❌ 无 | Symphony 用简单轮询 + 状态机，Maestro 用自研 Pipeline + Scheduler 做编排 |
-| Cursor CLI 执行 | ⚠️ 部分对应 | Symphony 用 Codex app-server，Cursor 有 ACP |
-| MCP 连接 | ⚠️ 部分对应 | Symphony 有 `linear_graphql` 工具，你可用 Linear MCP |
-| SKILL 流程 | ⚠️ 部分对应 | Symphony 用 `WORKFLOW.md`，你计划用 Cursor SKILL |
-| Dashboard 工作台 | ⚠️ 可选 | Symphony 有可选 HTTP 服务，你要做成核心入口 |
-| 长时间运行 | ✅ 支持 | Symphony 设计为长期运行 |
-| 环境隔离 | ✅ 支持 | 每 issue 独立 workspace |
+> Design document reflecting the current implementation. Based on Symphony SPEC,
+> Cursor ACP, and Linear GraphQL API.
 
 ---
 
-## 二、核心架构设计
-
-### 2.1 整体流程
+## 1. System Overview
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                          Maestro Dashboard / 工作台                           │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐ │
-│  │ Linear 任务 │  │ 状态变更    │  │ 触发编排    │  │ 人类 Review 反馈    │ │
-│  │ 列表/看板   │  │ → In Progress│  │             │  │ CI 结果 / PR 链接   │ │
-│  └─────────────┘  └─────────────┘  └─────────────┘  └─────────────────────┘ │
-└─────────────────────────────────────────────────────────────────────────────┘
-         │                    │                    │                    │
-         ▼                    ▼                    ▼                    ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         Pipeline 编排层                                        │
-│  ┌──────────────┐   ┌──────────────┐   ┌──────────────┐   ┌──────────────┐   │
-│  │ 任务解析     │ → │ 子任务拆分   │ → │ 执行调度     │ → │ 结果聚合     │   │
-│  │ (Issue→Plan) │   │ (Plan→Tasks) │   │ (Tasks→Run)  │   │ (Run→Report)  │   │
-│  └──────────────┘   └──────────────┘   └──────────────┘   └──────────────┘   │
-└─────────────────────────────────────────────────────────────────────────────┘
-         │                    │                    │                    │
-         ▼                    ▼                    ▼                    ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         Cursor CLI (ACP) 执行层                              │
-│  ┌──────────────────────────────────────────────────────────────────────────┐│
-│  │ agent acp + MCP(Linear/Postgres/...) + SKILL(.cursor/skills/*.md)       ││
-│  │ 编码 → 测试 → git commit → CI → 反馈到 Linear                             ││
-│  └──────────────────────────────────────────────────────────────────────────┘│
-└─────────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│                        TUI Workbench (rich + questionary)                │
+│   Issue list │ Worker status │ Manual trigger │ State management         │
+└──────────────────────────────────┬───────────────────────────────────────┘
+                                   │ HTTP / WebSocket
+                                   ▼
+┌──────────────────────────────────────────────────────────────────────────┐
+│                        Maestro Service (FastAPI)                          │
+│  /api/issues  │  /api/runs  │  /api/v1/orchestrator  │  /api/v1/refresh  │
+└──────────────────────────────────┬───────────────────────────────────────┘
+                                   │
+                    ┌──────────────▼──────────────┐
+                    │   Scheduler (Reconciler)      │
+                    │  • Polls Linear every 30s     │
+                    │  • Filters: team + assignee   │
+                    │  • Max 2 concurrent workers   │
+                    │  • Dispatches new issues      │
+                    │  • Handles handoff states     │
+                    └──────────────┬───────────────┘
+                                   │ spawn
+                    ┌──────────────▼──────────────┐
+                    │         Worker               │
+                    │  Pipeline: parse → execute   │
+                    │           → update_linear    │
+                    │  • Up to 10 turns per issue  │
+                    │  • Retry with backoff        │
+                    │  • Stall detection           │
+                    └──────────────┬───────────────┘
+                                   │
+                    ┌──────────────▼──────────────┐
+                    │   Headless Agent Runner      │
+                    │  cursor-agent -p --yolo      │
+                    │  NDJSON stream processing    │
+                    │  User-input detection        │
+                    └──────────────┬───────────────┘
+                                   │
+                    ┌──────────────▼──────────────┐
+                    │   Isolated Workspace         │
+                    │  {workspace_root}/{issue-id} │
+                    │  .cursor/rules/  (4 rules)   │
+                    │  .cursor/skills/ (5 skills)  │
+                    │  .cursor/mcp.json (5 MCPs)   │
+                    └─────────────────────────────┘
 ```
-
-### 2.2 触发机制：Symphony vs 你的设计
-
-| 维度 | Symphony | 你的设计 |
-|------|----------|----------|
-| 触发方式 | 轮询 Linear active states | Dashboard 中手动改状态 → 触发 |
-| 优点 | 全自动，无需人工 | 人工控制何时开始，更可控 |
-| 实现 | Polling loop | Webhook / 轮询 / Dashboard 主动调用 |
-
-建议：支持两种模式——  
-1）Dashboard 手动触发；2）可选轮询模式（状态变为 In Progress 时自动触发）。
 
 ---
 
-## 三、技术选型与实现要点
+## 2. Component Reference
 
-### 3.1 Cursor CLI (ACP) 替代 Codex app-server
+### 2.1 Scheduler (`orchestrator/scheduler.py`)
 
-Cursor 提供 `agent acp`，通过 stdio + JSON-RPC 与外部客户端通信，可替代 Symphony 中的 Codex app-server：
+Runs a polling loop against Linear GraphQL API every `polling.interval_ms` (default 30s).
+
+**Issue filtering:**
+- `tracker.team_id` — restrict to a specific Linear team
+- `tracker.assignee` — `"me"` resolves to the API key owner via `isMe: {eq: true}`
+- `tracker.active_states` — only `Todo` and `In Progress` by default
+
+**Reconciliation logic:**
+1. Fetch active issues matching filters
+2. For each issue not already running: dispatch if `max_concurrent_agents` not reached
+3. For each running issue: check if it moved to `handoff_states` or `terminal_states`
+4. If handoff detected: stop worker, preserve workspace for human review
+5. If terminal: stop worker, clean up workspace
+
+### 2.2 Pipeline Engine (`graph/graph.py`)
+
+Lightweight sequential pipeline replacing LangGraph:
+
+```
+parse_issue → execute_task → update_linear
+```
+
+On error at any node the pipeline stops with `status=failed`. The worker retries
+the whole pipeline on the next turn up to `agent.max_turns`.
+
+### 2.3 Headless Agent Runner (`agent/headless.py`)
+
+Launches `cursor-agent` in headless mode:
 
 ```bash
-# 启动 ACP 模式
-agent acp
+cursor-agent -p "<prompt>" --yolo --output-format stream-json
 ```
 
-要点：
+Processes the NDJSON event stream:
+- Detects `requestUserInput` events → raises `UserInputRequired`, triggers handoff
+- Detects process exit with error → marks turn as failed
+- Streams tool calls and responses back to the worker
 
-- 协议：JSON-RPC 2.0，newline-delimited JSON
-- 认证：`--api-key` / `CURSOR_API_KEY` 或 `agent login`
-- 会话：`session/new`、`session/prompt`、`session/load`
-- 权限：`session/request_permission`，可配置 `allow-once` / `allow-always` 等
-- MCP：`session/new` 时传入 `mcpServers`，可挂 Linear、Postgres 等
+### 2.4 Workspace Hooks (`workspace/hooks.py`)
 
-与 Symphony 的差异：
+Three hooks execute shell scripts in the workspace directory:
 
-- Symphony 用 Codex app-server 协议，Cursor 用 ACP
-- 需要实现一个 ACP 客户端，负责：spawn `agent acp`、发送 prompt、处理权限、接收流式输出
+| Hook | When | Current Content |
+|------|------|-----------------|
+| `after_create` | Workspace first created | Injects 4 Cursor rules, 5 Skills, `mcp.json` |
+| `before_run` | Before each agent turn | (empty) |
+| `after_run` | After each agent turn | Runs tests in OpenSandbox or local pytest; writes `sandbox-test-results.txt` |
+| `before_remove` | Before workspace deletion | (empty) |
 
-### 3.2 Pipeline 任务编排
+### 2.5 Cursor Rules (injected via `after_create`)
 
-Maestro 使用自研的轻量 Pipeline 引擎进行多步骤编排，流程示例：
+| File | Purpose |
+|------|---------|
+| `.cursor/rules/english-only.mdc` | All output and comments in English |
+| `.cursor/rules/ruff-best-practices.mdc` | Ruff linter and formatter conventions |
+| `.cursor/rules/python-code-style.mdc` | Python style: type hints, naming, structure |
+| `.cursor/rules/testing-conventions.mdc` | pytest conventions, no mocks of internals |
+
+### 2.6 Project Skills (injected via `after_create`)
+
+| Skill | Purpose |
+|-------|---------|
+| `git-branch-sync` | Branch management, sync with main, pre-PR checks |
+| `pr-create-describe` | Commit → push → create GitHub PR with auto description |
+| `ci-monitor-fix` | Monitor CI status post-PR, retrieve logs, fix issues |
+| `linear-agentic-issues` | Standardize Linear issue titles and labels |
+| `linear-update-on-pr` | Update Linear state and add PR link after CI passes |
+
+### 2.7 MCP Configuration (injected via `after_create`)
+
+```json
+{
+  "mcpServers": {
+    "linear":    { "command": "npx", "args": ["-y", "@linear/mcp-server"] },
+    "playwright":{ "command": "npx", "args": ["-y", "@playwright/mcp@latest"] },
+    "github":    { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"] },
+    "gitnexus":  { "command": "npx", "args": ["-y", "gitnexus@latest", "mcp"] },
+    "greptile":  { "type": "http", "url": "https://api.greptile.com/mcp" }
+  }
+}
+```
+
+---
+
+## 3. Docker Deployment
+
+### 3.1 Build
+
+The Dockerfile downloads the official Cursor agent CLI tarball at build time:
 
 ```
-[开始] → [解析 Issue] → [规划子任务] → [执行子任务] 
-    ↑                                        │
-    └──────── [检查 CI] ← [提交 PR] ←─────────┘
-                    │
-                    ▼
-              [CI 通过?] ──No──→ [修复] ──→ 回到执行
-                    │
-                   Yes
-                    ▼
-              [更新 Linear 状态] → [等待 Review]
+https://downloads.cursor.com/lab/{version}/{os}/{arch}/agent-cli-package.tar.gz
 ```
 
-Pipeline 节点：
+The tarball contains Node.js runtime + bundled JS modules, making the image
+fully self-contained. No host Cursor installation needed.
 
-1. **parse_issue**：从 Linear 拉取 issue，生成结构化任务描述
-2. **plan_tasks**：LLM 拆分为子任务（编码、测试、提交、CI 等）
-3. **execute_task**：调用 Cursor ACP 执行单个子任务
-4. **check_ci**：查询 CI 状态
-5. **update_linear**：更新 issue 状态、添加评论、PR 链接等
-6. **human_review**：进入人工审核节点（human-in-the-loop）
+```bash
+# Build with default version
+docker compose build
 
-Scheduler + Worker 的 reconciliation 和 retry 机制支持长时间运行和断点续跑。
+# Build with a specific cursor-agent version
+docker compose build --build-arg CURSOR_AGENT_VERSION=2026.02.27-e7d2ef6
+```
 
-### 3.3 SKILL 与 WORKFLOW.md
+### 3.2 Services
 
-| 维度 | Symphony WORKFLOW.md | Cursor SKILL |
-|------|----------------------|--------------|
-| 位置 | 仓库根目录 | `.cursor/skills/` 或 `$CODEX_HOME/skills` |
-| 内容 | YAML front matter + prompt 模板 | Markdown 技能说明 |
-| 用途 | 定义 agent 行为、配置 | 定义可复用的工作流/规则 |
+```yaml
+services:
+  maestro:    # port 8080 — API + orchestration + agent runner
+  opensandbox: # port 8899 — isolated Python test execution
+```
 
-建议：
+`maestro` depends on `opensandbox` being healthy. After startup, the API
+binds to `0.0.0.0:8080` (configurable via `MAESTRO_HTTP_HOST`).
 
-- 用 SKILL 描述「编码 → 测试 → 提交 → CI」等标准流程
-- 在 ACP 的 `session/new` 中通过 `mcpServers` 或 rules 引用这些 SKILL
-- 保留类似 `WORKFLOW.md` 的 YAML 配置（轮询间隔、workspace 根目录、并发数等）
+### 3.3 Authentication
 
-### 3.4 MCP 集成
-
-你已有 Linear MCP，可覆盖：
-
-- `list_issues`、`get_issue`、`save_issue`：任务列表、详情、状态更新
-- `list_comments`、`save_comment`：评论、PR 链接
-- `create_attachment`：CI 报告、截图等
-
-在 ACP 中配置 MCP 时，需要把 Linear MCP 的配置传给 `agent acp`，使 Cursor 在执行任务时能直接调用这些工具。
-
-### 3.5 环境隔离
-
-沿用 Symphony 思路：
-
-- 每个 issue 对应一个 workspace 目录：`{workspace_root}/{issue_identifier}/`
-- `agent acp` 的 `cwd` 设为该 workspace
-- 可选：用 Docker 或类似方案做更强隔离
-
-### 3.6 长时间运行
-
-- 使用持久化存储（如 Redis、Postgres）保存运行状态
-- 支持进程重启后从断点恢复
-- 对 Cursor ACP 会话做超时和重试策略
+The `docker-entrypoint.sh` exchanges `CURSOR_API_KEY` for a short-lived
+`CURSOR_AUTH_TOKEN` before starting Maestro, bypassing macOS Keychain in the
+Linux container.
 
 ---
 
-## 四、Dashboard 设计建议
+## 4. Human-in-the-Loop
 
-### 4.1 核心功能
+Aligned with Symphony SPEC's handoff philosophy:
 
-1. **Linear 看板**：展示 issue 列表、状态、优先级
-2. **状态操作**：拖拽或点击将状态改为 In Progress，触发编排
-3. **运行监控**：当前运行中的任务、进度、日志
-4. **结果展示**：CI 状态、PR 链接、walkthrough 等
-5. **Review 入口**：人工确认、合并或打回
-
-### 4.2 技术栈建议
-
-- 前端：React / Next.js + Linear SDK 或 Linear MCP
-- 后端：Python + FastAPI
-- 通信：WebSocket 推送运行状态，REST 触发任务
-
----
-
-## 五、实现路线图（建议）
-
-> 详细分阶段实现文档见 [docs/phases/](./phases/00-overview.md)。
-
-| 阶段 | 文档 | 内容 | 优先级 |
-|------|------|------|--------|
-| Phase 0 | [phase-0-foundation.md](./phases/phase-0-foundation.md) | ACP 客户端、Workspace、Linear 集成 | 高 |
-| Phase 1 | [phase-1-orchestration.md](./phases/phase-1-orchestration.md) | Pipeline 编排、Dashboard | 高 |
-| Phase 2 | [phase-2-enhancements.md](./phases/phase-2-enhancements.md) | SKILL 集成、MCP 传递 | 中 |
-| Phase 3 | [phase-3-production.md](./phases/phase-3-production.md) | Checkpoint 持久化、Docker、监控 | 中 |
+1. **Agent guidance**: The agent prompt instructs it to move issues to `Human Review`
+   when it cannot proceed autonomously.
+2. **Hard failure on `requestUserInput`**: If the agent tries to prompt the human
+   directly via the interactive prompt, the runner kills the process and marks
+   the turn as failed.
+3. **Handoff state detection**: Scheduler detects `Human Review` state → stops
+   worker → preserves workspace.
+4. **Test gate**: The `after_run` hook writes `SANDBOX_TEST_FAILED` marker if tests
+   fail. The agent checks this file and does not move to `Human Review` until
+   tests pass.
 
 ---
 
-## 六、风险与注意事项
+## 5. Configuration Reference (`WORKFLOW.md`)
 
-1. **ACP 协议稳定性**：ACP 仍在演进，需要关注 Cursor 文档和变更
-2. **Cursor 认证**：无头环境需用 API Key，注意安全存储
-3. **权限策略**：`allow-always` 适合自动化，但需评估安全风险
-4. **SKILL 加载方式**：需确认 Cursor CLI 在 ACP 模式下如何加载 SKILL（rules / MCP / 环境变量等）
-5. **CI 反馈**：需要明确 CI 系统（GitHub Actions、GitLab CI 等）及如何获取状态
+```yaml
+tracker:
+  kind: linear
+  api_key: $LINEAR_API_KEY
+  team_id: "<linear-team-uuid>"       # restrict to one team
+  assignee: "me"                      # only process your issues
+  active_states: [Todo, In Progress]
+  terminal_states: [Done, Cancelled, Closed]
+  handoff_states: [Human Review]
+
+polling:
+  interval_ms: 30000
+
+workspace:
+  root: $MAESTRO_WORKSPACE_ROOT       # /data/workspaces in Docker
+
+agent:
+  max_concurrent_agents: 2
+  max_turns: 10
+
+hooks:
+  after_create: |   # injects rules, skills, mcp.json
+  after_run: |      # runs tests in OpenSandbox or local pytest
+```
 
 ---
 
-## 七、与 Symphony 的复用建议
+## 6. Alignment with Symphony SPEC
 
-可以直接借鉴的部分：
-
-- Workspace 布局与生命周期（创建、复用、清理）
-- Linear 的 active/terminal states 定义
-- 重试与 backoff 策略
-- `WORKFLOW.md` 的 YAML 配置结构（可迁移为 `maestro.yaml` 等）
-
-需要替换的部分：
-
-- Codex app-server → Cursor ACP 客户端
-- 简单轮询调度 → Pipeline + Scheduler 编排
-- 可选 HTTP 服务 → 作为核心的 Dashboard
+| Dimension | Symphony | Maestro |
+|-----------|----------|---------|
+| Trigger | Poll Linear active states | Poll Linear with team + assignee filter |
+| Execution | Codex app-server (JSON-RPC stdio) | Cursor ACP (headless `-p` mode) |
+| Workflow definition | `WORKFLOW.md` YAML + prompt | `WORKFLOW.md` YAML + prompt + hooks |
+| Human handoff | `handoff_states` config | `handoff_states` + hard-fail on `requestUserInput` |
+| Workspace isolation | Per-issue directory | Per-issue directory + Skills + MCPs injected |
+| Retry | Exponential backoff | Exponential backoff + stall detection |
+| Concurrency | Configurable | Max 2 by default (local resource constraint) |
+| Deployment | Any | Docker (self-contained with cursor-agent) |
 
 ---
 
-## 八、参考资源
+## 7. Reference
 
 - [Symphony SPEC](https://github.com/openai/symphony/blob/main/SPEC.md)
-- [Symphony GitHub](https://github.com/openai/symphony)
-- [Cursor CLI ACP 文档](https://cursor.com/docs/cli/acp)
+- [Cursor Headless CLI Docs](https://cursor.com/docs/cli/headless)
+- [Cursor CLI Install](https://cursor.com/install)
+- [Linear GraphQL API](https://developers.linear.app/docs/graphql/working-with-the-graphql-api)
 - [Agent Client Protocol](https://agentclientprotocol.com/)

@@ -2,9 +2,8 @@
 set -euo pipefail
 
 # -----------------------------------------------------------------
-# Cursor agent CLI discovery
+# Cursor agent CLI verification
 # -----------------------------------------------------------------
-# Priority: 1) already on PATH  2) /opt/cursor-agent  3) mounted volume
 if ! command -v agent &>/dev/null; then
   for candidate in \
     /opt/cursor-agent/cursor-agent \
@@ -19,8 +18,8 @@ fi
 
 if ! command -v agent &>/dev/null; then
   echo "ERROR: Cursor agent CLI not found." >&2
-  echo "Install it at build time (INSTALL_CURSOR_CLI=1) or mount it:" >&2
-  echo "  docker run -v /path/to/agent:/usr/local/bin/agent ..." >&2
+  echo "The Docker image may need to be rebuilt:" >&2
+  echo "  docker compose build --no-cache maestro" >&2
   exit 1
 fi
 
