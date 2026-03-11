@@ -1,4 +1,4 @@
-"""LangGraph state definition for the Maestro orchestration graph."""
+"""State definition for the Maestro orchestration pipeline."""
 
 from __future__ import annotations
 

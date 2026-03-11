@@ -1,10 +1,10 @@
 # Phase 1：编排与工作台
 
-> 目标：引入 LangGraph 编排 parse→plan→execute→check_ci→update 全流程，并搭建 Dashboard 作为触发与监控入口。
+> 目标：引入 Pipeline 编排 parse→plan→execute→check_ci→update 全流程，并搭建 Dashboard 作为触发与监控入口。
 
 ## 1.1 阶段目标
 
-- [ ] 使用 LangGraph 构建任务编排图，支持多步执行与条件分支
+- [ ] 使用 Pipeline 引擎构建任务编排流程，支持多步执行与条件分支
 - [ ] 实现 parse_issue、plan_tasks、execute_task、check_ci、update_linear 等节点
 - [ ] 搭建 Dashboard：Linear 看板、手动触发、运行状态展示
 - [ ] 支持「状态改为 In Progress → 自动触发编排」的流程
@@ -18,7 +18,7 @@
 ```
 maestro/
 ├── src/
-│   ├── graph/              # LangGraph 编排
+│   ├── graph/              # Pipeline 编排
 │   │   ├── graph.py        # 图定义
 │   │   ├── nodes/
 │   │   │   ├── parse.py
@@ -43,24 +43,22 @@ maestro/
 
 ## 1.4 详细实现
 
-### 1.4.1 LangGraph 状态定义
+### 1.4.1 Pipeline 状态定义
 
 ```python
-from typing import TypedDict, Annotated
-from langgraph.graph import add_messages
+from typing import Any, TypedDict
 
-class MaestroState(TypedDict):
+class MaestroState(TypedDict, total=False):
     issue_id: str
-    issue: dict | None           # 从 Linear 拉取的原始 issue
-    plan: list[dict]             # 子任务列表 [{id, description, type}, ...]
+    issue: dict[str, Any] | None
+    plan: list[dict]
     current_task_index: int
-    execute_result: dict | None   # 最近一次 execute 的结果
-    ci_status: str | None        # pending | success | failure
+    execute_result: dict[str, Any] | None
+    ci_status: str | None
     pr_url: str | None
     linear_updated: bool
     error: str | None
-    # 可选：用于 human-in-the-loop
-    messages: Annotated[list, add_messages]
+    status: str  # pending | running | completed | failed
 ```
 
 ### 1.4.2 节点实现
@@ -175,7 +173,7 @@ execute_task ◄─────────────────┐
 
 ### 1.5.3 技术栈建议
 
-- 后端：Python + FastAPI + LangGraph
+- 后端：Python + FastAPI + Pipeline Engine
 - 前端：Next.js + Tailwind + Linear SDK 或 REST 代理
 - 通信：REST + WebSocket（Server-Sent Events 也可）
 
@@ -212,4 +210,4 @@ dashboard:
 |------|------|
 | LLM plan 质量不稳定 | 提供默认 plan 模板，LLM 仅做微调；或先用规则拆分 |
 | CI 系统差异大 | 抽象 CI 接口，先支持 GitHub Actions，后续扩展 |
-| 长时间运行超时 | 使用 LangGraph 异步 + checkpoint（Phase 3），或拆分为多个 API 调用 |
+| 长时间运行超时 | 使用异步执行 + 状态持久化（Phase 3），或拆分为多个 API 调用 |

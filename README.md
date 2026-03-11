@@ -3,7 +3,6 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Python-3.11%2B-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.11+" />
   <img src="https://img.shields.io/badge/FastAPI-Backend-009688?style=for-the-badge&logo=fastapi&logoColor=white" alt="FastAPI" />
-  <img src="https://img.shields.io/badge/LangGraph-Orchestration-1C3C3C?style=for-the-badge" alt="LangGraph" />
   <img src="https://img.shields.io/badge/Linear-Issue%20Ops-5E6AD2?style=for-the-badge&logo=linear&logoColor=white" alt="Linear" />
   <img src="https://img.shields.io/badge/Cursor-ACP%20Runner-111111?style=for-the-badge" alt="Cursor ACP" />
   <img src="https://img.shields.io/badge/WebSocket-Realtime-4A154B?style=for-the-badge" alt="WebSocket" />
@@ -30,7 +29,6 @@ layer into one repeatable system:
 
 - `Linear` is the source of truth for work.
 - `Cursor ACP` executes the agent run.
-- `LangGraph` structures the workflow.
 - `Isolated workspaces` keep runs reproducible and contained.
 - `FastAPI + WebSocket` expose service state and realtime visibility.
 
@@ -50,7 +48,7 @@ Maestro is designed for that layer.
 - Turn `Linear` issues into executable coding runs
 - Create or reuse isolated per-issue workspaces
 - Execute `Cursor` agent sessions in a controlled workflow
-- Orchestrate multi-step runs with `LangGraph`
+- Orchestrate multi-step runs with built-in scheduling and pipeline engine
 - Expose service and operator APIs via `FastAPI`
 - Stream live state updates over `WebSocket`
 - Support long-running automation through configurable workflow definitions
@@ -60,7 +58,7 @@ Maestro is designed for that layer.
 ```mermaid
 flowchart LR
     A[Linear Issues] --> B[Maestro Orchestrator]
-    B --> C[LangGraph Workflow]
+    B --> C[Pipeline Engine]
     C --> D[Cursor ACP Runner]
     D --> E[Isolated Workspace]
     B --> F[FastAPI Service]

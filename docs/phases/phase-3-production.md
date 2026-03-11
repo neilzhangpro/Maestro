@@ -4,7 +4,7 @@
 
 ## 3.1 阶段目标
 
-- [ ] LangGraph 使用 checkpoint 持久化，支持进程重启后恢复
+- [ ] 使用 checkpoint 持久化，支持进程重启后恢复
 - [ ] 支持 Docker / Docker Compose 部署
 - [ ] 环境隔离增强（可选 Docker 或 VM）
 - [ ] 基础监控与告警（日志、指标、健康检查）
@@ -17,31 +17,24 @@
 
 ### 3.3.1 Checkpoint 持久化
 
-**目标**：LangGraph 状态持久化到 Redis 或 Postgres，进程重启后可从上次中断处继续。
+**目标**：运行状态持久化到 Redis 或 Postgres，进程重启后可从上次中断处继续。
 
 **实现步骤**：
 
-1. **选择 Checkpointer**
-   - LangGraph 支持 `SqliteSaver`、`PostgresSaver`、`RedisSaver` 等
+1. **选择持久化后端**
    - 生产建议：Postgres（若已有）或 Redis
 
 2. **配置**
-   ```python
-   from langgraph.checkpoint.postgres import PostgresSaver
-   # 或
-   from langgraph.checkpoint.redis import RedisSaver
-
-   checkpointer = PostgresSaver.from_conn_string(DATABASE_URL)
-   graph = workflow.compile(checkpointer=checkpointer)
-   ```
+   - 将 `OrchestratorState` 的快照序列化到持久化存储
+   - 启动时从存储恢复未完成的 run
 
 3. **线程/进程安全**
-   - 每个 run 使用唯一 `thread_id`（如 `issue_id` + `run_id`）
-   - 并发 run 时确保 thread_id 不冲突
+   - 每个 run 使用唯一 ID（如 `issue_id` + `run_id`）
+   - 并发 run 时确保 ID 不冲突
 
 4. **恢复流程**
    - 启动时查询「未完成」的 run（如 `linear_updated=False` 且无 `error`）
-   - 调用 `graph.invoke(None, config={"configurable": {"thread_id": run_id}})` 从 checkpoint 恢复
+   - 重新调度对应的 issue 继续执行
 
 ### 3.3.2 Docker 部署
 
