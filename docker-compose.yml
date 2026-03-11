@@ -1,0 +1,17 @@
+services:
+  maestro:
+    build:
+      context: .
+      args:
+        INSTALL_CURSOR_CLI: "1"
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    volumes:
+      - workspaces:/data/workspaces
+      - ./WORKFLOW.md:/app/WORKFLOW.md:ro
+    restart: unless-stopped
+
+volumes:
+  workspaces:

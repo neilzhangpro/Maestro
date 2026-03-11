@@ -214,6 +214,8 @@ def _parse_polling(raw: dict[str, Any]) -> PollingConfig:
 
 def _parse_workspace(raw: dict[str, Any]) -> WorkspaceConfig:
     root_str = _str(raw.get("root"), "workspace.root", default="~/maestro_workspaces")
+    if not root_str or root_str.isspace():
+        root_str = "~/maestro_workspaces"
     root = Path(root_str).expanduser()
     if not root.is_absolute():
         root = (Path.cwd() / root).resolve()

@@ -79,30 +79,37 @@ flowchart LR
 
 ## Quick Start
 
-### Requirements
+### Option 1: Docker (Recommended)
+
+```bash
+# 1. Clone and configure
+cp .env.example .env
+# Edit .env with your LINEAR_API_KEY and CURSOR_API_KEY
+
+# 2. Build and start
+docker compose up -d
+
+# 3. View logs
+docker compose logs -f
+
+# 4. Check status
+curl http://localhost:8080/api/v1/state
+```
+
+### Option 2: Local Install
+
+**Requirements:**
 
 - Python `3.11+`
 - Cursor CLI with `agent`
 - A valid `LINEAR_API_KEY`
 - Cursor authentication via `CURSOR_API_KEY`, `CURSOR_AUTH_TOKEN`, or `agent login`
 
-### Install
-
 ```bash
 python3 -m venv .venv
 . .venv/bin/activate
 pip install -e '.[dev]'
-```
 
-### Configure
-
-```bash
-cp config/maestro.yaml config/maestro.local.yaml
-```
-
-Then export the required credentials:
-
-```bash
 export LINEAR_API_KEY=your_linear_key
 export CURSOR_API_KEY=your_cursor_key
 ```
@@ -124,7 +131,7 @@ maestro run MAE-42
 Start the orchestration service:
 
 ```bash
-maestro start
+maestro start --port 8080
 ```
 
 ## Philosophy

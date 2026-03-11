@@ -11,7 +11,7 @@ polling:
   interval_ms: 30000
 
 workspace:
-  root: ~/maestro_workspaces
+  root: $MAESTRO_WORKSPACE_ROOT
 
 hooks:
   after_create: ""
