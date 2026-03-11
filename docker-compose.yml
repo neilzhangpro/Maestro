@@ -1,4 +1,27 @@
 services:
+
+  # ── OpenSandbox ────────────────────────────────────────────────────────────
+  # Provides isolated Code Interpreter containers for after_run test validation.
+  # Needs access to the Docker socket to spawn child containers.
+  opensandbox:
+    image: python:3.11-slim
+    entrypoint: /bin/bash
+    command: /scripts/start-opensandbox.sh
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./scripts/start-opensandbox.sh:/scripts/start-opensandbox.sh:ro
+    ports:
+      - "8899:8080"   # host:8899 → container:8080 (avoids clash with maestro:8080)
+    healthcheck:
+      test: ["CMD", "python3", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8080/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 60s   # allow time for pip install on first boot
+    restart: unless-stopped
+
+  # ── Maestro ────────────────────────────────────────────────────────────────
   maestro:
     build:
       context: .
@@ -8,9 +31,15 @@ services:
       - "8080:8080"
     env_file:
       - .env
+    environment:
+      # Point Maestro at the opensandbox service (overrides empty SANDBOX_DOMAIN in .env)
+      - SANDBOX_DOMAIN=opensandbox:8080
     volumes:
       - workspaces:/data/workspaces
       - ./WORKFLOW.md:/app/WORKFLOW.md:ro
+    depends_on:
+      opensandbox:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:
