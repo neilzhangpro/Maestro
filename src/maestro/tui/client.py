@@ -40,5 +40,11 @@ class MaestroAPIClient:
     def refresh(self) -> dict[str, Any]:
         return self._http.post("/api/v1/refresh").raise_for_status().json()
 
+    def add_comment(self, issue_ref: str, body: str) -> dict[str, Any]:
+        return self._http.post(
+            f"/api/issues/{issue_ref}/comment",
+            json={"body": body},
+        ).raise_for_status().json()
+
     def close(self) -> None:
         self._http.close()

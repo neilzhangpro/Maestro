@@ -7,7 +7,7 @@ tracker:
   assignee: "me"
   active_states: [Todo, In Progress]
   terminal_states: [Done, Cancelled, Closed]
-  handoff_states: [Human Review]
+  handoff_states: [Human Review, In Review]
 
 polling:
   interval_ms: 30000
@@ -250,6 +250,34 @@ hooks:
     uv run pytest             # From apps/agentic/
     uv run pytest tests/unit  # Unit tests only
     ```
+    RULE_EOF
+    cat > .cursor/rules/plan-before-coding.mdc << 'RULE_EOF'
+    ---
+    description: Always plan before writing code — produce a concise implementation plan, get it right, then execute
+    alwaysApply: true
+    ---
+
+    # Plan Before Coding
+
+    Before writing any code, **always produce a concise implementation plan** first.
+
+    ## Required Planning Steps
+
+    1. **Understand the problem** — read the issue description, relevant files, and existing tests carefully.
+    2. **Identify the scope** — list which files will be created or modified and why.
+    3. **Design the approach** — describe the algorithm, data structure, or architecture decision chosen, and why alternatives were rejected.
+    4. **List acceptance criteria** — enumerate what must be true for the implementation to be considered complete.
+    5. **Start coding only after the plan is clear** — do not write production code until steps 1–4 are done.
+
+    ## Format
+
+    Output your plan as a short Markdown section titled `## Implementation Plan` before any code blocks.
+
+    ## Rationale
+
+    - Planning catches design flaws before they are expensive to fix.
+    - A written plan acts as a self-review and reduces unnecessary back-and-forth.
+    - Separating thinking from typing improves output quality in autonomous sessions.
     RULE_EOF
     mkdir -p .cursor/skills/git-branch-sync
     cat > .cursor/skills/git-branch-sync/SKILL.md << 'SKILL_EOF'
@@ -1000,7 +1028,16 @@ hooks:
       }
     }
     MCP_EOF
-  before_run: ""
+    if [ -n "${GITHUB_TOKEN:-}" ]; then
+      echo "[workspace-init] Cloning repository..."
+      git clone --depth=1 "https://x-access-token:${GITHUB_TOKEN}@github.com/Novamind-Labs-Ltd/novie.git" . 2>/dev/null || true
+    fi
+  before_run: |
+    if [ -d .git ]; then
+      echo "[workspace-sync] Rebasing onto latest origin/main..."
+      git fetch origin main --quiet 2>/dev/null || true
+      git rebase origin/main --quiet 2>/dev/null || echo "[workspace-sync] Rebase skipped (not on a branch yet)"
+    fi
   after_run: |
     python3 - << 'SANDBOX_EOF'
     import subprocess, sys, pathlib, os, datetime, json
@@ -1107,7 +1144,8 @@ hooks:
 
 cursor:
   command: agent
-  model: ""
+  model: sonnet-4.6
+  plan_model: opus-4.6
   sandbox: disabled
   force: true
   trust: true
@@ -1120,6 +1158,16 @@ agent:
   max_turns: 10
   max_retry_backoff_ms: 300000
   max_concurrent_agents_by_state: {}
+
+github:
+  token: $GITHUB_TOKEN
+  owner: Novamind-Labs-Ltd
+  repo: novie
+  ci_watch_states: [In Review]
+  ci_poll_interval_ms: 60000
+  ci_max_wait_ms: 1800000
+  ci_pass_target_state: Human Review
+  ci_fail_target_state: In Progress
 
 server:
   port: 8080
@@ -1142,13 +1190,20 @@ You are working on issue **{{ issue.identifier }}: {{ issue.title }}**.
 {% endfor %}{% endif %}
 
 ## Instructions
-1. Read the codebase and understand the project structure.
-2. Implement the changes described above.
-3. Write or update tests for your changes.
-4. Ensure all existing tests still pass.
-5. Check `sandbox-test-results.txt` if it exists — it contains results from the automated sandbox test runner that ran after the previous turn. If it shows `FAILED`, fix the reported errors before proceeding.
-6. If `SANDBOX_TEST_FAILED` file exists in the workspace root, tests have not yet passed — do not move to Human Review until it is gone.
-7. When finished and tests pass, update the Linear issue state to **Human Review** so a human can verify your work.
+1. **Invoke the `git-branch-sync` skill** to ensure you are on a dedicated feature branch based on the latest `origin/main`. This is mandatory before any code changes.
+2. Read the codebase and understand the project structure.
+3. Implement the changes described above.
+4. Write or update tests for your changes.
+5. Ensure all existing tests still pass.
+6. Check `sandbox-test-results.txt` if it exists — it contains results from the automated sandbox test runner that ran after the previous turn. If it shows `FAILED`, fix the reported errors before proceeding.
+7. If `SANDBOX_TEST_FAILED` file exists in the workspace root, tests have not yet passed — do not move to Human Review until it is gone.
+8. When the implementation is complete and local tests pass, **invoke the `git-branch-sync` skill again** (pre-PR checklist) to rebase onto latest `origin/main` and resolve any conflicts, then create a Pull Request using the `pr-create-describe` skill.
+9. After the PR is created, **invoke the `ci-monitor-fix` skill** to monitor CI/CD pipeline status:
+   - Poll CI checks until all complete.
+   - If any check fails, retrieve the failure logs, fix the code, commit and push.
+   - Repeat until ALL CI checks pass.
+10. After ALL CI checks pass, update the Linear issue state to **In Review**.
+    - Maestro's CI Watcher will automatically verify the result and move the issue to **Done** when confirmed, or back to **In Progress** if a regression is detected.
 
 ## Decision Policy
 - If you encounter a problem that requires human judgment (e.g., architectural decisions, ambiguous requirements, security-sensitive changes), **stop working and update the issue state to Human Review** with a comment explaining what decision is needed.

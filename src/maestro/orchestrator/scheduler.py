@@ -12,6 +12,7 @@ from maestro.agent.events import AgentEvent
 from maestro.config import LinearConfig
 from maestro.linear.client import LinearClient
 from maestro.linear.models import Issue
+from maestro.orchestrator.ci_watcher import CIWatcher
 from maestro.orchestrator.concurrency import ConcurrencyController
 from maestro.orchestrator.reconciliation import Reconciler
 from maestro.orchestrator.retry import RetryQueue
@@ -47,6 +48,7 @@ class Scheduler:
             self.state, config, self._linear,
             on_terminate=self._terminate_running,
         )
+        self._ci_watcher = CIWatcher(config, self._linear)
 
         self._tick_timer: threading.Timer | None = None
         self._stop_event = threading.Event()
@@ -77,6 +79,7 @@ class Scheduler:
         self._stop_event.set()
         if self._tick_timer:
             self._tick_timer.cancel()
+        self._ci_watcher.close()
 
     def request_immediate_poll(self) -> None:
         """Trigger an out-of-band poll (e.g. from /api/v1/refresh)."""
@@ -94,6 +97,9 @@ class Scheduler:
         self._linear = self._make_linear_client(config)
         self._reconciler._linear = self._linear
         old_linear.close()
+
+        self._ci_watcher.close()
+        self._ci_watcher = CIWatcher(config, self._linear)
 
         log.info("Scheduler config reloaded.")
 
@@ -155,7 +161,13 @@ class Scheduler:
         if dispatched:
             log.info("Dispatched %d issue(s).", dispatched)
 
-        # 6. Notify + schedule next
+        # 6. CI watcher — check issues in watch states
+        try:
+            self._ci_watcher.poll()
+        except Exception:
+            log.warning("CI watcher error", exc_info=True)
+
+        # 7. Notify + schedule next
         self._notify()
         self._schedule_tick(self.config.polling.interval_ms)
 

@@ -77,11 +77,14 @@ class Worker:
 
                 prompt = self._build_prompt(current_issue, self.attempt, turn, max_turns)
 
+                plan_model = self.config.cursor.plan_model
+                model_override = plan_model if (turn == 1 and plan_model) else None
                 result = self._runner.run_turn(
                     workspace=workspace.path,
                     prompt=prompt,
                     resume_session_id=session_id,
                     on_event=lambda e, iid=issue_id: self._on_event(iid, e),
+                    model_override=model_override,
                 )
 
                 if not session_id:

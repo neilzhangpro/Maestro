@@ -125,6 +125,7 @@ class HooksConfig:
 class CursorConfig:
     command: str = "agent"
     model: str = ""
+    plan_model: str = ""
     sandbox: str = "disabled"
     force: bool = True
     trust: bool = True
@@ -132,6 +133,18 @@ class CursorConfig:
     turn_timeout_ms: int = 3_600_000
     stall_timeout_ms: int = 300_000
     api_key: str | None = None
+
+
+@dataclass(frozen=True)
+class GitHubConfig:
+    token: str = ""
+    owner: str = ""
+    repo: str = ""
+    ci_watch_states: list[str] = field(default_factory=list)
+    ci_poll_interval_ms: int = 60_000
+    ci_max_wait_ms: int = 1_800_000
+    ci_pass_target_state: str = "Done"
+    ci_fail_target_state: str = "In Progress"
 
 
 @dataclass(frozen=True)
@@ -156,6 +169,7 @@ class ServiceConfig:
     cursor: CursorConfig
     agent: AgentConfig
     server: ServerConfig
+    github: GitHubConfig
     prompt_template: str
     workflow_path: Path
 
@@ -170,6 +184,7 @@ class ServiceConfig:
             cursor=_parse_cursor(raw.get("cursor") or {}),
             agent=_parse_agent(raw.get("agent") or {}),
             server=_parse_server(raw.get("server") or {}),
+            github=_parse_github(raw.get("github") or {}),
             prompt_template=wd.prompt_template,
             workflow_path=wd.source_path,
         )
@@ -243,6 +258,7 @@ def _parse_cursor(raw: dict[str, Any]) -> CursorConfig:
     return CursorConfig(
         command=_str(raw.get("command"), "cursor.command", default="agent"),
         model=_str(raw.get("model"), "cursor.model", default=""),
+        plan_model=_str(raw.get("plan_model"), "cursor.plan_model", default=""),
         sandbox=_str(raw.get("sandbox"), "cursor.sandbox", default="disabled"),
         force=_bool(raw.get("force"), "cursor.force", default=True),
         trust=_bool(raw.get("trust"), "cursor.trust", default=True),
@@ -286,6 +302,32 @@ def _parse_server(raw: dict[str, Any]) -> ServerConfig:
     if port is None:
         return ServerConfig()
     return ServerConfig(port=_int(port, "server.port", default=0))
+
+
+def _parse_github(raw: dict[str, Any]) -> GitHubConfig:
+    token = _str(raw.get("token"), "github.token", default="")
+    if not token:
+        token = os.environ.get("GITHUB_TOKEN", "")
+    return GitHubConfig(
+        token=token,
+        owner=_str(raw.get("owner"), "github.owner", default=""),
+        repo=_str(raw.get("repo"), "github.repo", default=""),
+        ci_watch_states=_str_list(
+            raw.get("ci_watch_states"), "github.ci_watch_states", default=[],
+        ),
+        ci_poll_interval_ms=_int(
+            raw.get("ci_poll_interval_ms"), "github.ci_poll_interval_ms", default=60_000,
+        ),
+        ci_max_wait_ms=_int(
+            raw.get("ci_max_wait_ms"), "github.ci_max_wait_ms", default=1_800_000,
+        ),
+        ci_pass_target_state=_str(
+            raw.get("ci_pass_target_state"), "github.ci_pass_target_state", default="Done",
+        ),
+        ci_fail_target_state=_str(
+            raw.get("ci_fail_target_state"), "github.ci_fail_target_state", default="In Progress",
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------

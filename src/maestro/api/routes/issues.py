@@ -55,6 +55,10 @@ class StateUpdate(BaseModel):
     state_name: str
 
 
+class CommentCreate(BaseModel):
+    body: str
+
+
 @router.get("")
 def list_issues(state: str | None = None) -> list[dict[str, Any]]:
     lc = _make_linear_config()
@@ -69,11 +73,12 @@ def list_all_issues() -> list[dict[str, Any]]:
     """List issues across all workflow states."""
     lc = _make_linear_config()
     assert _config is not None
-    all_states = (
+    all_states = list(dict.fromkeys(
         _config.tracker.active_states
+        + _config.tracker.handoff_states
         + _config.tracker.terminal_states
         + ["Backlog"]
-    )
+    ))
     with LinearClient(lc) as client:
         issues = client.fetch_issues(state_names=all_states)
     return [_issue_dict(i) for i in issues]
@@ -105,3 +110,15 @@ def update_issue_state(issue_ref: str, body: StateUpdate) -> dict[str, Any]:
     except LinearError as exc:
         raise HTTPException(400, str(exc)) from exc
     return {"success": result.success, "issue_id": result.issue_id}
+
+
+@router.post("/{issue_ref}/comment")
+def create_issue_comment(issue_ref: str, body: CommentCreate) -> dict[str, Any]:
+    lc = _make_linear_config()
+    try:
+        with LinearClient(lc) as client:
+            issue = client.fetch_issue(issue_ref)
+            comment_id = client.create_comment(issue.id, body.body)
+    except LinearError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"success": True, "comment_id": comment_id}

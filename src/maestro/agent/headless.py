@@ -52,8 +52,9 @@ class HeadlessRunner:
         prompt: str,
         resume_session_id: str | None = None,
         on_event: Callable[[AgentEvent], None] | None = None,
+        model_override: str | None = None,
     ) -> TurnResult:
-        cmd = self._build_command(workspace, prompt, resume_session_id)
+        cmd = self._build_command(workspace, prompt, resume_session_id, model_override)
         env = self._build_env()
 
         log.info("Launching headless agent in %s", workspace)
@@ -80,6 +81,7 @@ class HeadlessRunner:
         workspace: Path,
         prompt: str,
         resume_id: str | None,
+        model_override: str | None = None,
     ) -> list[str]:
         executable = self._resolve_executable()
         cmd = [executable, "-p"]
@@ -94,8 +96,9 @@ class HeadlessRunner:
             cmd.append("--trust")
         if self.config.approve_mcps:
             cmd.append("--approve-mcps")
-        if self.config.model:
-            cmd.extend(["--model", self.config.model])
+        effective_model = model_override or self.config.model
+        if effective_model:
+            cmd.extend(["--model", effective_model])
         if self.config.sandbox:
             cmd.extend(["--sandbox", self.config.sandbox])
         if resume_id:

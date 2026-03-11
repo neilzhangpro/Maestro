@@ -49,13 +49,17 @@ Maestro is designed for that layer.
 - Filter Linear issues by **team and assignee** — manage only your own work in shared workspaces
 - Turn `Linear` issues into executable coding runs with isolated per-issue workspaces
 - Execute `Cursor` agent sessions in a controlled multi-turn pipeline (up to 10 turns)
+- **Dual-model strategy** — plan with Opus, code with Sonnet (configurable `plan_model` + `model`)
 - Run up to 2 concurrent agent tasks with automatic retry and stall detection
-- Inject **global Cursor rules** (code quality, style, testing) and **project Skills** (git, PR, CI, Linear) into every workspace via `after_create` hook
+- **Automated workspace bootstrap** — `after_create` hook clones the repo; `before_run` hook auto-rebases onto latest `origin/main` every turn
+- Inject **global Cursor rules** (code quality, style, testing, plan-before-coding) and **project Skills** (git, PR, CI, Linear) into every workspace
 - Configure **5 MCPs** (Linear, Playwright, GitHub, GitNexus, Greptile) in every agent workspace
 - Run tests in an isolated **OpenSandbox Code Interpreter** after each turn and feed results back to the agent
+- **CI Watcher** — monitors GitHub CI status for issues in `In Review` state; auto-transitions to `Done` on success or back to `In Progress` on failure for automated fix
+- **E2E Test gate** — TUI provides a `🧪 E2E Test` panel for human end-to-end testing before marking issues as Done
 - Human-in-the-loop via `Human Review` handoff state — agent pauses, workspace preserved
 - Portable Docker deployment — cursor-agent CLI downloaded automatically at build time
-- Terminal workbench (`make tui`) for real-time monitoring and issue management
+- Terminal workbench (`make tui`) for real-time monitoring, issue management, and E2E testing
 
 ## Architecture
 
@@ -63,19 +67,30 @@ Maestro is designed for that layer.
 flowchart LR
     A[Linear Issues] --> B[Maestro Scheduler]
     B --> C[Pipeline Engine]
-    C --> D[Cursor ACP Runner]
+    C --> D[Cursor Agent Runner]
     D --> E[Isolated Workspace]
     B --> F[FastAPI Service]
     F --> G[TUI Workbench]
     E --> H[OpenSandbox Tests]
     H --> D
+    B --> I[CI Watcher]
+    I -->|CI pass| J[Done / Human Review]
+    I -->|CI fail| B
 ```
 
 ## Repository Layout
 
 ```text
 .
-├── src/maestro/           # Core service: orchestrator, pipeline, API, worker, agent, linear
+├── src/maestro/           # Core service
+│   ├── agent/             # Headless runner, event normalization
+│   ├── api/               # FastAPI routes (issues, runs, state, refresh)
+│   ├── github/            # GitHub REST client (PR lookup, CI checks)
+│   ├── linear/            # Linear GraphQL client and models
+│   ├── orchestrator/      # Scheduler, reconciler, retry, CI watcher, concurrency
+│   ├── tui/               # Terminal workbench (rich + questionary)
+│   ├── worker/            # Multi-turn worker per issue
+│   └── workflow/          # WORKFLOW.md parser, config, template engine
 ├── docs/                  # Architecture notes
 ├── config/                # Runtime configuration
 ├── scripts/               # install-cursor-cli.sh, start-opensandbox.sh
@@ -137,14 +152,26 @@ All behaviour is driven by `WORKFLOW.md`. Key settings:
 tracker:
   kind: linear
   api_key: $LINEAR_API_KEY
-  team_id: "your-linear-team-id"      # restrict to a specific team
+  team_id: "your-linear-team-id"
   assignee: "me"                       # only process issues assigned to you
   active_states: [Todo, In Progress]
-  handoff_states: [Human Review]       # agent pauses here for human approval
+  handoff_states: [Human Review, In Review]
+
+cursor:
+  model: sonnet-4.6                    # model for coding turns
+  plan_model: opus-4.6                 # model for planning turn (turn 1)
 
 agent:
   max_concurrent_agents: 2
   max_turns: 10
+
+github:
+  token: $GITHUB_TOKEN
+  owner: your-org
+  repo: your-repo
+  ci_watch_states: [In Review]         # monitor CI for issues in these states
+  ci_pass_target_state: Human Review   # where to move on CI pass
+  ci_fail_target_state: In Progress    # where to move on CI fail (triggers re-fix)
 ```
 
 Use `tracker.assignee: "me"` in a multi-person Linear workspace to ensure Maestro
@@ -169,10 +196,27 @@ only picks up issues assigned to you.
 |----------|----------|-------------|
 | `LINEAR_API_KEY` | Yes | Linear personal API key |
 | `CURSOR_API_KEY` | Yes | Cursor API key for agent authentication |
-| `GITHUB_TOKEN` | Recommended | For GitHub MCP and PR creation |
+| `GITHUB_TOKEN` | Recommended | For GitHub MCP, PR creation, and CI Watcher |
 | `GREPTILE_API_KEY` | Optional | For Greptile code-search MCP |
 | `SANDBOX_DOMAIN` | Optional | OpenSandbox server URL (set automatically in Docker) |
 | `SANDBOX_API_KEY` | Optional | OpenSandbox authentication key |
+
+## Workflow Lifecycle
+
+```text
+Linear Todo ──► In Progress ──► PR Created ──► In Review ──► Human Review ──► Done
+                     ▲                              │              │
+                     │                              ▼              ▼
+                     └──── CI Fail (auto-fix) ◄── CI Watcher    E2E Test
+                                                                   │
+                                                         Fail ─► In Progress
+```
+
+1. **Scheduler** picks up `Todo` issues from Linear and dispatches them to workers
+2. **Worker** runs the Cursor agent through multi-turn execution (plan → code → test → PR)
+3. Agent creates a PR and moves the issue to **In Review**
+4. **CI Watcher** monitors GitHub CI; on success, transitions to **Human Review**; on failure, moves back to **In Progress** for automated fix
+5. **TUI E2E Test** provides a manual quality gate in `Human Review` — Pass moves to **Done**, Fail moves back to **In Progress**
 
 ## Human-in-the-Loop
 
@@ -182,6 +226,10 @@ it moves the Linear issue to **Human Review** state. Maestro:
 1. Detects the state change and stops the worker
 2. Preserves the workspace for human inspection
 3. Does not reschedule until the issue moves back to an active state
+
+The TUI provides an **E2E Test** action for issues in Human Review:
+- **Pass**: marks the issue as Done with a success comment on Linear
+- **Fail**: records the failure reason, adds a comment to Linear, and moves the issue back to In Progress for the agent to automatically fix
 
 ## Philosophy
 
@@ -193,5 +241,6 @@ That system is the harness.
 
 ## Status
 
-Maestro is evolving from a foundation scaffold into a full harness engineering
-platform for autonomous software delivery.
+**v0.3.0** — Maestro is a complete harness engineering platform for autonomous
+software delivery, with CI monitoring, E2E testing gates, dual-model strategy,
+and robust Git synchronization.

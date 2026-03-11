@@ -48,6 +48,7 @@ STATE_ICONS: dict[str, str] = {
     "cancelled": "[red]✗[/red]",
     "closed": "[red]✗[/red]",
     "human review": "[magenta]⊙[/magenta]",
+    "in review": "[blue]◉[/blue]",
 }
 
 LOGO = r"""[cyan]
@@ -60,6 +61,7 @@ ACTIONS_ALL = [
     "▶  Run issue",
     "⇄  Move issue",
     "🔍 Issue detail",
+    "🧪 E2E Test",
     "⟳  Force poll",
     "⎋  Quit",
 ]
@@ -69,7 +71,7 @@ ACTIONS_DISCONNECTED = [
     "⎋  Quit",
 ]
 
-MOVABLE_STATES = ["Backlog", "Todo", "In Progress", "Done", "Human Review", "Cancelled"]
+MOVABLE_STATES = ["Backlog", "Todo", "In Progress", "In Review", "Done", "Human Review", "Cancelled"]
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
@@ -148,7 +150,7 @@ def render_issues(console: Console, issues: list[dict], orch: dict) -> None:
     tbl.add_column("Labels", style="magenta", width=18)
     tbl.add_column("Status", width=12, justify="right")
 
-    state_order = {"in progress": 0, "todo": 1, "backlog": 2, "human review": 3, "done": 4}
+    state_order = {"in progress": 0, "todo": 1, "in review": 2, "human review": 3, "backlog": 4, "done": 5}
     pri_order = lambda i: i.get("priority") or 99
     sorted_issues = sorted(
         issues,
@@ -390,14 +392,104 @@ def action_issue_detail(
         parts.append(Panel(w_tbl, title="[yellow]Active Worker[/yellow]", border_style="yellow", box=box.ROUNDED))
 
     console.print(Panel(
-        *parts if len(parts) == 1 else parts[0],
+        parts[0],
         title=f"[bold]{ref}[/bold]",
         border_style="cyan",
         box=box.DOUBLE_EDGE,
     ))
-    if len(parts) > 1:
-        for p in parts[1:]:
-            console.print(p)
+    for p in parts[1:]:
+        console.print(p)
+
+    _pause()
+
+
+def action_e2e_test(
+    console: Console,
+    client: MaestroAPIClient,
+    issues: list[dict],
+) -> None:
+    """E2E test gate for issues in Human Review state."""
+    candidates = [
+        i for i in issues
+        if i.get("state", "").lower() == "human review"
+    ]
+    if not candidates:
+        console.print("[yellow]No issues in Human Review awaiting E2E test.[/yellow]")
+        _pause()
+        return
+
+    choices = [
+        f"{i['identifier']}  {i['title'][:50]}"
+        for i in candidates
+    ]
+    answer = questionary.select(
+        "Select issue to test:", choices=choices, style=PROMPT_STYLE,
+    ).ask()
+    if not answer:
+        return
+
+    ref = answer.split()[0]
+    issue = next((i for i in candidates if i["identifier"] == ref), None)
+    if not issue:
+        return
+
+    detail = Table.grid(padding=(0, 2))
+    detail.add_column(style="dim", width=14)
+    detail.add_column()
+    detail.add_row("Identifier", f"[cyan bold]{issue['identifier']}[/cyan bold]")
+    detail.add_row("Title", issue.get("title", ""))
+    detail.add_row("State", f"{_state_icon('human review')} Human Review")
+    if issue.get("url"):
+        detail.add_row("Linear URL", f"[link={issue['url']}]{issue['url']}[/link]")
+
+    console.print(Panel(
+        detail,
+        title=f"[bold]🧪 E2E Test — {ref}[/bold]",
+        border_style="cyan",
+        box=box.DOUBLE_EDGE,
+    ))
+    console.print()
+    console.print("[dim]Run your local end-to-end tests, then report the result below.[/dim]")
+    console.print()
+
+    verdict = questionary.select(
+        "Test result:",
+        choices=["✅ Pass — move to Done", "❌ Fail — send back for fix"],
+        style=PROMPT_STYLE,
+    ).ask()
+
+    if verdict is None:
+        return
+
+    if "Pass" in verdict:
+        try:
+            client.set_state(ref, "Done")
+            client.add_comment(
+                ref,
+                "**E2E Test Passed** ✅\n\nManual end-to-end testing completed successfully. Moving to Done.",
+            )
+            console.print(f"[green]✓ {ref} → Done (E2E passed)[/green]")
+        except Exception as exc:
+            console.print(f"[red]Error: {exc}[/red]")
+    else:
+        fail_reason = questionary.text(
+            "Describe what failed:",
+            style=PROMPT_STYLE,
+        ).ask()
+        if fail_reason is None:
+            return
+        fail_reason = fail_reason.strip() or "E2E test failed (no details provided)"
+
+        try:
+            client.add_comment(
+                ref,
+                f"**E2E Test Failed** ❌\n\n{fail_reason}\n\n"
+                f"Moving back to In Progress for automated fix.",
+            )
+            client.set_state(ref, "In Progress")
+            console.print(f"[yellow]↩ {ref} → In Progress (E2E failed)[/yellow]")
+        except Exception as exc:
+            console.print(f"[red]Error: {exc}[/red]")
 
     _pause()
 
@@ -461,6 +553,8 @@ def run_tui(url: str = "http://127.0.0.1:8080") -> None:
                 action_move_issue(console, client, issues)
             elif "Issue detail" in choice:
                 action_issue_detail(console, issues, orch)
+            elif "E2E Test" in choice:
+                action_e2e_test(console, client, issues)
             elif "Force poll" in choice:
                 try:
                     client.refresh()
