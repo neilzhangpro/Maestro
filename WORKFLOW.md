@@ -53,6 +53,82 @@ hooks:
 
     When in doubt, write it in English.
     RULE_EOF
+    cat > .cursor/rules/ruff-best-practices.mdc << 'RULE_EOF'
+    ---
+    description: Ruff code quality rules — refactor-first principle, common fix strategies
+    globs: **/*.py
+    alwaysApply: false
+    ---
+
+    # Python Linting — Ruff Best Practices
+
+    > Core Principle: "When Ruff reports violations, ALWAYS fix the code first. Only add ignores when following established best practices."
+
+    ## Ruff Config
+
+    - Target: Python 3.14, line-length 120
+    - Rules: E, F, W, I (isort)
+    - Known first-party: `novie_agentic`, `novie_core`
+
+    ## Process When Linter Complains
+
+    1. Read the error — understand what rule is violated and why
+    2. Refactor first — can you fix the code to eliminate the violation?
+    3. Research best practice — is there an established pattern?
+    4. Only add ignore if justified — document WHY, use per-file ignore
+    5. NEVER use `--no-verify` to bypass checks
+
+    ## Common Rules and Fix Strategies
+
+    | Rule    | Violation                | Fix Strategy                                    |
+    |---------|--------------------------|------------------------------------------------|
+    | PLR0913 | Too many arguments (>5)  | Use Parameter Object Pattern (frozen dataclass) |
+    | PLW0603 | Global statement usage   | Refactor to DI or separate module               |
+    | PLC0415 | Import outside top-level | Move to module level or separate module pattern |
+    | E501    | Line too long            | Break into multiple lines                       |
+    | RET505  | Unnecessary elif         | Use early returns                               |
+
+    ## Parameter Object Pattern (PLR0913)
+
+    ```python
+    # ✅ CORRECT — group related parameters
+    @dataclass(frozen=True)
+    class ModelConfig:
+        model_key: str
+        api_key: str
+        temperature: float
+        provider_config: dict[str, Any]
+
+    def create_model(config: ModelConfig) -> ChatModel: ...
+
+    # ❌ WRONG — too many arguments
+    def create_model(model_key, api_key, temperature, provider_config, ...): ...
+    ```
+
+    ## Separate Module Pattern (PLC0415)
+
+    For optional dependencies, isolate imports in a dedicated module:
+
+    ```python
+    # ✅ CORRECT — _alibaba.py (isolated module)
+    def create_alibaba_model(config: ModelConfig) -> Any:
+        try:
+            from langchain_qwq import ChatQwen
+        except ImportError as e:
+            raise ConfigurationError("Install langchain-qwq") from e
+        return ChatQwen(**kwargs)
+    ```
+
+    ## When Ignores Are Acceptable
+
+    Only with documentation:
+
+    ```toml
+    [tool.ruff.lint.per-file-ignores]
+    "engine/tools/_optional.py" = ["PLC0415"]  # handles optional dependency
+    "tests/**/*.py" = ["S101", "ANN"]          # assert + no annotations in tests
+    ```
+    RULE_EOF
   before_run: ""
   after_run: ""
   before_remove: ""
