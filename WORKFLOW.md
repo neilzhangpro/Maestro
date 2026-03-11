@@ -191,6 +191,64 @@ hooks:
     - Use `list[str]` instead of `List[str]` (Python 3.14 target)
     - Import `Annotated` from `typing` for LangGraph reducers
     RULE_EOF
+    cat > .cursor/rules/testing-conventions.mdc << 'RULE_EOF'
+    ---
+    description: Testing conventions — pytest, asyncio, testcontainers, file organization
+    globs: "tests/**/*.py"
+    alwaysApply: false
+    ---
+
+    # Testing Conventions
+
+    ## Framework
+
+    - **pytest** (>=9.0.2) with **pytest-asyncio** (auto mode)
+    - **testcontainers** (>=4.0.0) for integration tests with PostgreSQL
+    - Config in `pyproject.toml`: `asyncio_mode = "auto"`, `testpaths = ["tests"]`
+
+    ## Directory Structure
+
+    ```
+    tests/
+    ├── unit/
+    │   └── core/
+    │       └── test_*.py           # Unit tests (no external dependencies)
+    └── integration/
+        ├── conftest.py             # Shared fixtures (testcontainers)
+        └── test_*.py               # Integration tests (requires Docker)
+    ```
+
+    ## Naming
+
+    - Test files: `test_*.py`
+    - Test functions: `test_<what_is_being_tested>`
+    - Fixtures in `conftest.py` at appropriate directory level
+
+    ## Test-Specific Relaxations
+
+    These are acceptable in test files (configured in ruff per-file-ignores):
+
+    - `S101` — `assert` statements allowed
+    - `ANN` — Type annotations not required
+    - `PLC0415` — Inline imports allowed (test-specific imports)
+
+    ## Async Tests
+
+    ```python
+    async def test_persistence_isolation():
+        """Tests run with asyncio_mode='auto' — no decorator needed."""
+        result = await some_async_function()
+        assert result is not None
+    ```
+
+    ## Running Tests
+
+    ```bash
+    make test-agentic         # From monorepo root
+    uv run pytest             # From apps/agentic/
+    uv run pytest tests/unit  # Unit tests only
+    ```
+    RULE_EOF
   before_run: ""
   after_run: ""
   before_remove: ""
