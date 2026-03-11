@@ -129,6 +129,68 @@ hooks:
     "tests/**/*.py" = ["S101", "ANN"]          # assert + no annotations in tests
     ```
     RULE_EOF
+    cat > .cursor/rules/python-code-style.mdc << 'RULE_EOF'
+    ---
+    description: Python code style — import rules, naming conventions, data structure selection
+    globs: **/*.py
+    alwaysApply: false
+    ---
+
+    # Python Code Style
+
+    ## Import Rules
+
+    - ALWAYS place imports at the top of the file (module level)
+    - NEVER use inline imports inside functions/methods in production code
+    - Exceptions: test files, CLI scripts, or resolving genuine circular imports (must document why)
+
+    ```python
+    # ✅ CORRECT
+    from novie_core.shared.encryption import EncryptionService
+
+    def process_token(token: str) -> bytes:
+        return EncryptionService().encrypt(token)
+
+    # ❌ WRONG — inline import in production code
+    def process_token(token: str) -> bytes:
+        from novie_core.shared.encryption import EncryptionService
+        return EncryptionService().encrypt(token)
+    ```
+
+    ## Naming Conventions (PEP 8)
+
+    | Type              | Convention   | Example                            |
+    |-------------------|--------------|------------------------------------|
+    | Variables         | `snake_case` | `user_id`, `organization_name`     |
+    | Functions/Methods | `snake_case` | `get_user()`, `check_connection()` |
+    | Classes           | `PascalCase` | `AnalystRouter`, `WorkflowState`   |
+    | Constants         | `UPPER_CASE` | `DEFAULT_TIMEOUT`, `MAX_RETRIES`   |
+    | Enum members      | `UPPER_CASE` | `ToolMode.ENFORCED`                |
+
+    ## Data Structure Guidelines
+
+    **Pydantic BaseModel** — Default choice for most cases:
+    - API request/response models
+    - Domain entities and configuration
+    - LangChain tool schemas, LangGraph state validation
+    - External API responses (runtime validation)
+
+    **TypedDict** — Limited use:
+    - GraphQL context (required by Strawberry framework)
+    - Performance-critical dict-like structures where validation is unnecessary
+    - NOT for LangGraph state — use Pydantic instead
+
+    **@dataclass(frozen=True)** — Immutable containers:
+    - Simple internal data without validation
+    - Parameter Object pattern for function arguments
+
+    ## Type Hints
+
+    - Always use type hints for function signatures
+    - Use `str | None` instead of `Optional[str]`
+    - Use `list[str]` instead of `List[str]` (Python 3.14 target)
+    - Import `Annotated` from `typing` for LangGraph reducers
+    RULE_EOF
   before_run: ""
   after_run: ""
   before_remove: ""
