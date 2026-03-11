@@ -13,7 +13,6 @@ RUN pip install --no-cache-dir -e .
 
 COPY WORKFLOW.md ./
 COPY config/ config/
-COPY dashboard/ dashboard/
 
 # ---------------------------------------------------------------
 # Cursor agent CLI

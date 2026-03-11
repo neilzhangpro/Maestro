@@ -125,6 +125,20 @@ def run_once(
     manager.run_after(workspace)
 
 
+@app.command()
+def tui(
+    url: str = typer.Option(
+        "http://127.0.0.1:8080",
+        "--url",
+        help="Maestro API base URL.",
+    ),
+) -> None:
+    """Launch the interactive terminal workbench."""
+    from maestro.tui.app import run_tui
+
+    run_tui(url)
+
+
 @app.command("list")
 def list_issues(
     workflow: Path = typer.Argument(None, help="Path to WORKFLOW.md"),

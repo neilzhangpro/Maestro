@@ -16,6 +16,8 @@ dependencies = [
   "fastapi>=0.115",
   "uvicorn[standard]>=0.30",
   "websockets>=12.0",
+  "rich>=13.7",
+  "questionary>=2.0",
 ]
 
 [project.optional-dependencies]

@@ -1,5 +1,5 @@
 .PHONY: up down restart logs maestro-logs sandbox-logs \
-        build dev install test clean help
+        build dev tui install test clean help
 
 # ── Docker Compose ──────────────────────────────────────────────────────────
 
@@ -10,6 +10,7 @@ up:
 	@echo "  Maestro   → http://localhost:8080"
 	@echo "  OpenSandbox → http://localhost:8899"
 	@echo ""
+	@echo "  Run 'make tui' to launch terminal workbench."
 	@echo "  Run 'make logs' to tail all logs."
 
 ## Stop all services
@@ -50,6 +51,10 @@ install:
 dev:
 	@if [ ! -f .env ]; then cp .env.example .env; echo "Created .env from .env.example — fill in your keys."; fi
 	.venv/bin/maestro start
+
+## Launch the terminal workbench (connect to running Maestro)
+tui:
+	.venv/bin/maestro tui
 
 ## Start opensandbox-server locally (separate terminal)
 sandbox-dev:

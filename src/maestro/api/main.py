@@ -1,18 +1,15 @@
-"""FastAPI application for Maestro — serves dashboard and Symphony-compatible API."""
+"""FastAPI application for Maestro — REST API and WebSocket events."""
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from contextlib import asynccontextmanager
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse
 
 from maestro.api.routes import issues as issues_routes
 from maestro.api.routes import runs as runs_routes
@@ -25,9 +22,6 @@ if TYPE_CHECKING:
     from maestro.workflow.config import ServiceConfig
 
 log = logging.getLogger(__name__)
-
-DASHBOARD_DIR = Path(__file__).resolve().parent.parent.parent.parent / "dashboard"
-
 
 def create_app(
     config: "ServiceConfig | None" = None,
@@ -93,11 +87,8 @@ def create_app(
         finally:
             run_manager.unsubscribe(queue)
 
-    if DASHBOARD_DIR.exists() and (DASHBOARD_DIR / "index.html").exists():
-        @app.get("/")
-        def serve_dashboard():
-            return FileResponse(DASHBOARD_DIR / "index.html")
-
-        app.mount("/static", StaticFiles(directory=str(DASHBOARD_DIR)), name="dashboard-static")
+    @app.get("/")
+    def root():
+        return JSONResponse({"name": "Maestro", "version": "0.2.0", "api": "/api"})
 
     return app, run_manager
