@@ -76,7 +76,6 @@ def list_all_issues() -> list[dict[str, Any]]:
     all_states = list(dict.fromkeys(
         _config.tracker.active_states
         + _config.tracker.handoff_states
-        + _config.tracker.terminal_states
         + ["Backlog"]
     ))
     with LinearClient(lc) as client:

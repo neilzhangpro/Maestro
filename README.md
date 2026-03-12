@@ -62,6 +62,14 @@ Maestro is designed for that layer.
 - Portable Docker deployment — cursor-agent CLI downloaded automatically at build time
 - Terminal workbench (`make tui`) for real-time monitoring, issue management, and E2E testing
 
+## TUI Workbench
+
+<p align="center">
+  <img src="docs/images/tui-workbench.png" alt="Maestro TUI Workbench" width="800" />
+</p>
+
+<p align="center"><em>Terminal workbench — real-time issue tracking, worker monitoring, and one-click actions</em></p>
+
 ## Architecture
 
 ```mermaid
