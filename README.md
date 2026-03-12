@@ -13,8 +13,9 @@
 </p>
 
 <p align="center">
-  Maestro turns Linear issues into Cursor-powered coding runs inside isolated workspaces,
-  with orchestration, visibility, and human control built in.
+  Maestro turns Linear issues into AI-agent-powered coding runs inside isolated workspaces,
+  with orchestration, cross-run learning, and human control built in.
+  Supports <strong>Cursor ACP</strong> and <strong>Claude Code</strong> as execution backends.
 </p>
 
 ---
@@ -28,8 +29,9 @@ It connects the source of work, the execution environment, and the orchestration
 layer into one repeatable system:
 
 - `Linear` is the source of truth for work, filtered by team and assignee.
-- `Cursor ACP` executes the agent run inside isolated workspaces.
+- `Cursor ACP` / `Claude Code` execute agent runs inside isolated workspaces (pluggable backends).
 - `Pipeline Engine` orchestrates parse → execute → update in a controlled sequence.
+- `Execution Memory` records per-turn outcomes and injects cross-run learning into prompts.
 - `FastAPI + WebSocket` expose service state and realtime visibility.
 - `TUI Workbench` provides a terminal-native interface for monitoring and control.
 
@@ -48,8 +50,9 @@ Maestro is designed for that layer.
 
 - Filter Linear issues by **team and assignee** — manage only your own work in shared workspaces
 - Turn `Linear` issues into executable coding runs with isolated per-issue workspaces
-- Execute `Cursor` agent sessions in a controlled multi-turn pipeline (up to 10 turns)
+- **Multi-backend support** — run agents via **Cursor ACP** or **Claude Code** CLI, selected in `WORKFLOW.md`
 - **Dual-model strategy** — plan with Opus, code with Sonnet (configurable `plan_model` + `model`)
+- **Execution memory** — record per-turn outcomes to a shared JSONL log; inject historical insights (success rate, failure patterns, most-used tools) into future prompts so agents learn from past runs
 - Run up to 2 concurrent agent tasks with automatic retry and stall detection
 - **Automated workspace bootstrap** — `after_create` hook clones the repo; `before_run` hook auto-rebases onto latest `origin/main` every turn
 - Inject **global Cursor rules** (code quality, style, testing, plan-before-coding) and **project Skills** (git, PR, CI, Linear) into every workspace
@@ -76,15 +79,20 @@ Maestro is designed for that layer.
 flowchart LR
     A[Linear Issues] --> B[Maestro Scheduler]
     B --> C[Pipeline Engine]
-    C --> D[Cursor Agent Runner]
-    D --> E[Isolated Workspace]
-    B --> F[FastAPI Service]
-    F --> G[TUI Workbench]
-    E --> H[OpenSandbox Tests]
-    H --> D
-    B --> I[CI Watcher]
-    I -->|CI pass| J[Done / Human Review]
-    I -->|CI fail| B
+    C --> D{Agent Backend}
+    D -->|Cursor ACP| E1[Cursor Runner]
+    D -->|Claude Code| E2[Claude Runner]
+    E1 --> F[Isolated Workspace]
+    E2 --> F
+    F --> G[OpenSandbox Tests]
+    G --> C
+    F -->|turn results| H[Execution Memory]
+    H -->|learning context| C
+    B --> I[FastAPI Service]
+    I --> J[TUI Workbench]
+    B --> K[CI Watcher]
+    K -->|CI pass| L[Done / Human Review]
+    K -->|CI fail| B
 ```
 
 ## Repository Layout
@@ -92,16 +100,16 @@ flowchart LR
 ```text
 .
 ├── src/maestro/           # Core service
-│   ├── agent/             # Headless runner, event normalization
-   │   ├── api/               # FastAPI routes (issues, runs, state, refresh)
-   │   ├── github/            # GitHub REST client (PR lookup, CI checks)
-   │   ├── learning/          # Execution history recorder, cross-run learning
-   │   ├── linear/            # Linear GraphQL client and models
-   │   ├── orchestrator/      # Scheduler, reconciler, retry, CI watcher, concurrency
-   │   ├── tui/               # Terminal workbench (rich + questionary)
-   │   ├── worker/            # Multi-turn worker per issue
-   │   └── workflow/          # WORKFLOW.md parser, config, template engine
-├── docs/                  # Architecture notes
+│   ├── agent/             # Cursor + Claude Code runners, event normalization
+│   ├── api/               # FastAPI routes (issues, runs, state, refresh)
+│   ├── github/            # GitHub REST client (PR lookup, CI checks)
+│   ├── learning/          # Execution history recorder, cross-run learning
+│   ├── linear/            # Linear GraphQL client and models
+│   ├── orchestrator/      # Scheduler, reconciler, retry, CI watcher, concurrency
+│   ├── tui/               # Terminal workbench (rich + questionary)
+│   ├── worker/            # Multi-turn worker per issue
+│   └── workflow/          # WORKFLOW.md parser, config, template engine
+├── docs/                  # Architecture notes, SKILL evolution roadmap
 ├── config/                # Runtime configuration
 ├── scripts/               # install-cursor-cli.sh, start-opensandbox.sh
 ├── WORKFLOW.md            # Prompt template, tracker config, hooks, agent instructions
@@ -257,23 +265,14 @@ That system is the harness.
 
 ### Multi-Runner Architecture
 
-Maestro currently uses **Cursor ACP** as its sole agent execution backend.
-The architecture is designed to evolve into a multi-runner system where different
-LLM backends can be used interchangeably:
+Maestro supports pluggable agent execution backends. The active backend is
+selected via `WORKFLOW.md` configuration:
 
 | Runner | Status | Description |
 |--------|--------|-------------|
-| **Cursor ACP** | Stable | Current default. Headless CLI with `stream-json` output, multi-turn sessions, MCP support. |
-| **Claude Code** | Planned | Anthropic's CLI agent (`claude -p --output-format stream-json`). Similar event protocol to Cursor, native tool use, no MCP config needed. Will be implemented as a `ClaudeCodeRunner` sharing the same `AgentRunner` protocol. |
-| **Codex CLI** | Planned | OpenAI's open-source CLI agent (`codex --full-auto`). Runs locally with sandboxed execution. Will require adapter for its distinct event format and approval model. |
-
-**Implementation plan:**
-
-1. **Runner Abstraction Layer** — Extract the current `HeadlessRunner` into a `Protocol`-based `AgentRunner` interface with `run_turn()`, `cancel()`, and `kill_current_process()` methods
-2. **Runner Registry** — Configuration-driven runner selection via `WORKFLOW.md` (`cursor.runner: cursor | claude-code | codex`)
-3. **Event Normalization** — Each runner adapts its native event stream to a common `AgentEvent` format already used internally
-4. **Auth & Environment** — Per-runner credential management (Cursor API key, Anthropic API key, OpenAI API key)
-5. **MCP Compatibility** — Cursor and Claude Code both support MCPs natively; Codex will need tool bridging
+| **Cursor ACP** | Stable | Default backend. Headless CLI with `stream-json` output, multi-turn sessions, MCP support. |
+| **Claude Code** | Implemented | Anthropic's CLI agent (`claude -p --output-format stream-json`). `ClaudeCodeRunner` shares the `AgentRunner` protocol with `HeadlessRunner`. Configure via the `claude_code` section in `WORKFLOW.md`. |
+| **Codex CLI** | Planned | OpenAI's open-source CLI agent (`codex --full-auto`). Will require adapter for its distinct event format and approval model. |
 
 ### SKILL Self-Learning
 
@@ -299,6 +298,7 @@ See [`docs/skill-evolution-roadmap.md`](docs/skill-evolution-roadmap.md) for the
 
 ## Status
 
-**v0.3.0** — Maestro is a complete harness engineering platform for autonomous
-software delivery, with CI monitoring, E2E testing gates, draft PR workflow,
+**v0.4.0** — Adds multi-backend agent support (Cursor ACP + Claude Code),
+SKILL self-learning with execution memory and prompt injection (Stages 0-1),
+on top of the existing CI monitoring, E2E testing gates, draft PR workflow,
 dual-model strategy, and robust Git synchronization.
