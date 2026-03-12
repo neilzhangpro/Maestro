@@ -11,11 +11,13 @@ from __future__ import annotations
 
 import logging
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
 from maestro.agent.events import AgentEvent
 from maestro.agent.headless import HeadlessRunner
+from maestro.learning.recorder import RunRecord, RunRecorder
 from maestro.linear.client import LinearClient
 from maestro.linear.models import Issue
 from maestro.workflow.config import ServiceConfig, TrackerConfig
@@ -57,6 +59,7 @@ class Worker:
         )
         self._workspace_mgr = WorkspaceManager(config.workspace.root, hooks=hooks)
         self._runner = HeadlessRunner(config.cursor)
+        self._recorder = RunRecorder(config.workspace.root / ".maestro")
 
     def cancel(self) -> None:
         """Request cancellation — kills the agent subprocess and stops the run loop."""
@@ -91,15 +94,26 @@ class Worker:
 
                 prompt = self._build_prompt(current_issue, self.attempt, turn, max_turns)
 
+                turn_tools: list[str] = []
+
+                def _on_event_wrapper(e: AgentEvent, iid: str = issue_id) -> None:
+                    if e.tool_name:
+                        turn_tools.append(e.tool_name)
+                    self._on_event(iid, e)
+
                 plan_model = self.config.cursor.plan_model
                 model_override = plan_model if (turn == 1 and plan_model) else None
                 result = self._runner.run_turn(
                     workspace=workspace.path,
                     prompt=prompt,
                     resume_session_id=session_id,
-                    on_event=lambda e, iid=issue_id: self._on_event(iid, e),
+                    on_event=_on_event_wrapper,
                     model_override=model_override,
                     cancel_event=self._cancel_event,
+                )
+
+                self._record_turn(
+                    identifier, turn, result, turn_tools,
                 )
 
                 if not session_id:
@@ -147,12 +161,15 @@ class Worker:
     def _build_prompt(
         self, issue: Issue, attempt: int | None, turn: int, max_turns: int,
     ) -> str:
+        learning_context = self._recorder.build_learning_context()
+
         if turn == 1:
             try:
                 return render_prompt(
                     self.config.prompt_template,
                     issue=issue.to_template_dict(),
                     attempt=attempt,
+                    learning_context=learning_context or None,
                 )
             except TemplateRenderError:
                 log.exception("Template rendering failed — using fallback prompt.")
@@ -160,12 +177,40 @@ class Worker:
                     f"You are working on issue {issue.identifier}: {issue.title}\n\n"
                     f"{issue.description or '(no description)'}"
                 )
-        return (
+
+        continuation = (
             f"Continue working on {issue.identifier}: {issue.title}. "
             f"The issue is still in '{issue.state}' state. "
             f"Turn {turn}/{max_turns}. "
             f"Review your prior work and complete any remaining tasks."
         )
+        if learning_context:
+            continuation += f"\n\n## Execution History Insights\n{learning_context}"
+        return continuation
+
+    def _record_turn(
+        self,
+        identifier: str,
+        turn: int,
+        result: "TurnResult",
+        turn_tools: list[str],
+    ) -> None:
+        """Persist one turn's outcome to the shared execution history."""
+        try:
+            from maestro.agent.headless import TurnResult as _TR  # noqa: F401
+            self._recorder.record(RunRecord(
+                issue_identifier=identifier,
+                timestamp_utc=datetime.now(timezone.utc).isoformat(),
+                turn=turn,
+                attempt=self.attempt,
+                success=result.success,
+                error=result.error,
+                duration_ms=result.duration_ms,
+                tools_used=sorted(set(turn_tools)),
+                output_summary=(result.output_text or "")[:300],
+            ))
+        except Exception:
+            log.warning("Failed to record turn %d for %s", turn, identifier, exc_info=True)
 
     def _refresh_issue_state(self, issue_id: str) -> Issue | None:
         try:

@@ -1213,3 +1213,10 @@ You are working on issue **{{ issue.identifier }}: {{ issue.title }}**.
 ## Retry Context
 This is retry attempt #{{ attempt }}. Review your prior work in this workspace and fix any issues found during the previous run.
 {% endif %}
+
+{% if learning_context %}
+## Execution History Insights
+The following patterns have been observed from recent automated runs across this project. Use these insights to avoid known pitfalls:
+
+{{ learning_context }}
+{% endif %}

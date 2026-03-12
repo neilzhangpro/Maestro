@@ -19,9 +19,14 @@ def render_prompt(
     *,
     issue: dict[str, Any],
     attempt: int | None = None,
+    learning_context: str | None = None,
 ) -> str:
     try:
         tpl = _ENV.from_string(template_source)
-        return tpl.render(issue=issue, attempt=attempt).strip()
+        return tpl.render(
+            issue=issue,
+            attempt=attempt,
+            learning_context=learning_context,
+        ).strip()
     except Exception as exc:
         raise TemplateRenderError(f"Prompt rendering failed: {exc}") from exc

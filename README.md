@@ -93,13 +93,14 @@ flowchart LR
 .
 ├── src/maestro/           # Core service
 │   ├── agent/             # Headless runner, event normalization
-│   ├── api/               # FastAPI routes (issues, runs, state, refresh)
-│   ├── github/            # GitHub REST client (PR lookup, CI checks)
-│   ├── linear/            # Linear GraphQL client and models
-│   ├── orchestrator/      # Scheduler, reconciler, retry, CI watcher, concurrency
-│   ├── tui/               # Terminal workbench (rich + questionary)
-│   ├── worker/            # Multi-turn worker per issue
-│   └── workflow/          # WORKFLOW.md parser, config, template engine
+   │   ├── api/               # FastAPI routes (issues, runs, state, refresh)
+   │   ├── github/            # GitHub REST client (PR lookup, CI checks)
+   │   ├── learning/          # Execution history recorder, cross-run learning
+   │   ├── linear/            # Linear GraphQL client and models
+   │   ├── orchestrator/      # Scheduler, reconciler, retry, CI watcher, concurrency
+   │   ├── tui/               # Terminal workbench (rich + questionary)
+   │   ├── worker/            # Multi-turn worker per issue
+   │   └── workflow/          # WORKFLOW.md parser, config, template engine
 ├── docs/                  # Architecture notes
 ├── config/                # Runtime configuration
 ├── scripts/               # install-cursor-cli.sh, start-opensandbox.sh
@@ -273,6 +274,20 @@ LLM backends can be used interchangeably:
 3. **Event Normalization** — Each runner adapts its native event stream to a common `AgentEvent` format already used internally
 4. **Auth & Environment** — Per-runner credential management (Cursor API key, Anthropic API key, OpenAI API key)
 5. **MCP Compatibility** — Cursor and Claude Code both support MCPs natively; Codex will need tool bridging
+
+### SKILL Self-Learning
+
+Maestro now includes **execution memory** — a cross-run learning system that
+records per-turn outcomes and injects historical insights into agent prompts.
+
+| Stage | Status | Description |
+|-------|--------|-------------|
+| **Stage 0** — Passive Logging | Done | JSONL-based execution history at `workspace_root/.maestro/run_history.jsonl` |
+| **Stage 1** — Learning Annotations | Done | Summarised history (success rate, failure patterns, top tools) injected into prompts |
+| **Stage 2** — SKILL Incremental Patches | Planned | LLM-generated addenda appended to SKILL files based on failure patterns |
+| **Stage 3** — Full Self-Mutation | Planned | LLM rewrites SKILL bodies with sandbox validation and auto-rollback |
+
+See [`docs/skill-evolution-roadmap.md`](docs/skill-evolution-roadmap.md) for the full evolution plan.
 
 ### Other Planned Enhancements
 
