@@ -91,11 +91,12 @@ def run_once(
         typer.echo(f"Linear error: {exc}", err=True)
         raise typer.Exit(1) from exc
 
+    resolved = config.resolved_hooks()
     hooks = ShellHooks(
-        after_create_script=config.hooks.after_create,
-        before_run_script=config.hooks.before_run,
-        after_run_script=config.hooks.after_run,
-        timeout_ms=config.hooks.timeout_ms,
+        after_create_script=resolved.after_create,
+        before_run_script=resolved.before_run,
+        after_run_script=resolved.after_run,
+        timeout_ms=resolved.timeout_ms,
     )
     manager = WorkspaceManager(config.workspace.root, hooks=hooks)
     workspace = manager.prepare_workspace(issue.identifier)
@@ -110,7 +111,12 @@ def run_once(
     typer.echo(f"Workspace: {workspace.path}")
     typer.echo("")
 
-    runner = HeadlessRunner(config.cursor)
+    if config.backend == "claude_code" and config.claude_code:
+        from maestro.agent.claude_code import ClaudeCodeRunner
+        runner = ClaudeCodeRunner(config.claude_code)
+    else:
+        runner = HeadlessRunner(config.cursor)
+
     result = runner.run_turn(
         workspace=workspace.path,
         prompt=prompt,

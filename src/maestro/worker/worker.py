@@ -50,15 +50,21 @@ class Worker:
         self._on_exit = on_exit
         self._cancel_event = threading.Event()
 
+        resolved = config.resolved_hooks()
         hooks = ShellHooks(
-            after_create_script=config.hooks.after_create,
-            before_run_script=config.hooks.before_run,
-            after_run_script=config.hooks.after_run,
-            before_remove_script=config.hooks.before_remove,
-            timeout_ms=config.hooks.timeout_ms,
+            after_create_script=resolved.after_create,
+            before_run_script=resolved.before_run,
+            after_run_script=resolved.after_run,
+            before_remove_script=resolved.before_remove,
+            timeout_ms=resolved.timeout_ms,
         )
         self._workspace_mgr = WorkspaceManager(config.workspace.root, hooks=hooks)
-        self._runner = HeadlessRunner(config.cursor)
+
+        if config.backend == "claude_code" and config.claude_code:
+            from maestro.agent.claude_code import ClaudeCodeRunner
+            self._runner = ClaudeCodeRunner(config.claude_code)
+        else:
+            self._runner = HeadlessRunner(config.cursor)
         self._recorder = RunRecorder(config.workspace.root / ".maestro")
 
     def cancel(self) -> None:
@@ -101,7 +107,10 @@ class Worker:
                         turn_tools.append(e.tool_name)
                     self._on_event(iid, e)
 
-                plan_model = self.config.cursor.plan_model
+                if self.config.backend == "claude_code" and self.config.claude_code:
+                    plan_model = self.config.claude_code.plan_model
+                else:
+                    plan_model = self.config.cursor.plan_model
                 model_override = plan_model if (turn == 1 and plan_model) else None
                 result = self._runner.run_turn(
                     workspace=workspace.path,

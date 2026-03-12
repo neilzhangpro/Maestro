@@ -63,6 +63,19 @@ def _bool(raw: Any, name: str, *, default: bool) -> bool:
     raise ConfigError(f"{name} must be a boolean.")
 
 
+def _float(raw: Any, name: str, *, default: float) -> float:
+    if raw is None:
+        return default
+    if isinstance(raw, (int, float)):
+        return float(raw)
+    if isinstance(raw, str):
+        try:
+            return float(raw)
+        except ValueError:
+            raise ConfigError(f"{name} must be a number.")
+    raise ConfigError(f"{name} must be a number.")
+
+
 def _str_list(raw: Any, name: str, *, default: list[str]) -> list[str]:
     if raw is None:
         return list(default)
@@ -119,6 +132,10 @@ class HooksConfig:
     after_run: str | None = None
     before_remove: str | None = None
     timeout_ms: int = 60_000
+    claude_code_after_create: str | None = None
+    claude_code_before_run: str | None = None
+    claude_code_after_run: str | None = None
+    claude_code_before_remove: str | None = None
 
 
 @dataclass(frozen=True)
@@ -133,6 +150,27 @@ class CursorConfig:
     turn_timeout_ms: int = 3_600_000
     stall_timeout_ms: int = 300_000
     api_key: str | None = None
+
+
+_DEFAULT_CLAUDE_TOOLS = [
+    "Bash", "Read", "Write", "Edit", "MultiEdit",
+    "Glob", "Grep", "LS", "TodoRead", "TodoWrite",
+]
+
+
+@dataclass(frozen=True)
+class ClaudeCodeConfig:
+    command: str = "claude"
+    model: str = ""
+    plan_model: str = ""
+    api_key: str | None = None
+    skip_permissions: bool = False
+    allowed_tools: list[str] = field(default_factory=lambda: list(_DEFAULT_CLAUDE_TOOLS))
+    max_turns_per_invocation: int = 0
+    max_budget_usd: float = 0.0
+    append_system_prompt: str | None = None
+    turn_timeout_ms: int = 3_600_000
+    stall_timeout_ms: int = 300_000
 
 
 @dataclass(frozen=True)
@@ -160,6 +198,9 @@ class ServerConfig:
     port: int | None = None
 
 
+_SUPPORTED_BACKENDS = {"cursor", "claude_code"}
+
+
 @dataclass(frozen=True)
 class ServiceConfig:
     tracker: TrackerConfig
@@ -172,10 +213,23 @@ class ServiceConfig:
     github: GitHubConfig
     prompt_template: str
     workflow_path: Path
+    backend: str = "cursor"
+    claude_code: ClaudeCodeConfig | None = None
 
     @classmethod
     def from_workflow(cls, wd: WorkflowDefinition) -> "ServiceConfig":
         raw = _expand_env(wd.config)
+        backend = _str(raw.get("backend"), "backend", default="cursor")
+        if backend not in _SUPPORTED_BACKENDS:
+            raise ConfigError(
+                f"Unsupported backend: {backend!r}. "
+                f"Must be one of {sorted(_SUPPORTED_BACKENDS)}"
+            )
+
+        claude_code: ClaudeCodeConfig | None = None
+        if backend == "claude_code":
+            claude_code = _parse_claude_code(raw.get("claude_code") or {})
+
         return cls(
             tracker=_parse_tracker(raw.get("tracker") or {}),
             polling=_parse_polling(raw.get("polling") or {}),
@@ -187,6 +241,20 @@ class ServiceConfig:
             github=_parse_github(raw.get("github") or {}),
             prompt_template=wd.prompt_template,
             workflow_path=wd.source_path,
+            backend=backend,
+            claude_code=claude_code,
+        )
+
+    def resolved_hooks(self) -> HooksConfig:
+        """Return hooks with backend-specific overrides applied."""
+        if self.backend != "claude_code":
+            return self.hooks
+        return HooksConfig(
+            after_create=self.hooks.claude_code_after_create or self.hooks.after_create,
+            before_run=self.hooks.claude_code_before_run or self.hooks.before_run,
+            after_run=self.hooks.claude_code_after_run or self.hooks.after_run,
+            before_remove=self.hooks.claude_code_before_remove or self.hooks.before_remove,
+            timeout_ms=self.hooks.timeout_ms,
         )
 
 
@@ -248,6 +316,10 @@ def _parse_hooks(raw: dict[str, Any]) -> HooksConfig:
         after_run=_opt_str(raw.get("after_run")),
         before_remove=_opt_str(raw.get("before_remove")),
         timeout_ms=_int(raw.get("timeout_ms"), "hooks.timeout_ms", default=60_000),
+        claude_code_after_create=_opt_str(raw.get("claude_code_after_create")),
+        claude_code_before_run=_opt_str(raw.get("claude_code_before_run")),
+        claude_code_after_run=_opt_str(raw.get("claude_code_after_run")),
+        claude_code_before_remove=_opt_str(raw.get("claude_code_before_remove")),
     )
 
 
@@ -304,6 +376,41 @@ def _parse_server(raw: dict[str, Any]) -> ServerConfig:
     return ServerConfig(port=_int(port, "server.port", default=0))
 
 
+def _parse_claude_code(raw: dict[str, Any]) -> ClaudeCodeConfig:
+    api_key = _opt_str(raw.get("api_key"))
+    if not api_key:
+        api_key = os.environ.get("ANTHROPIC_API_KEY") or None
+    return ClaudeCodeConfig(
+        command=_str(raw.get("command"), "claude_code.command", default="claude"),
+        model=_str(raw.get("model"), "claude_code.model", default=""),
+        plan_model=_str(raw.get("plan_model"), "claude_code.plan_model", default=""),
+        api_key=api_key,
+        skip_permissions=_bool(
+            raw.get("skip_permissions"), "claude_code.skip_permissions", default=False,
+        ),
+        allowed_tools=_str_list(
+            raw.get("allowed_tools"), "claude_code.allowed_tools",
+            default=list(_DEFAULT_CLAUDE_TOOLS),
+        ),
+        max_turns_per_invocation=_int(
+            raw.get("max_turns_per_invocation"),
+            "claude_code.max_turns_per_invocation", default=0,
+        ),
+        max_budget_usd=_float(
+            raw.get("max_budget_usd"), "claude_code.max_budget_usd", default=0.0,
+        ),
+        append_system_prompt=_opt_str(raw.get("append_system_prompt")),
+        turn_timeout_ms=_int(
+            raw.get("turn_timeout_ms"), "claude_code.turn_timeout_ms",
+            default=3_600_000,
+        ),
+        stall_timeout_ms=_int(
+            raw.get("stall_timeout_ms"), "claude_code.stall_timeout_ms",
+            default=300_000,
+        ),
+    )
+
+
 def _parse_github(raw: dict[str, Any]) -> GitHubConfig:
     token = _str(raw.get("token"), "github.token", default="")
     if not token:
@@ -341,5 +448,16 @@ def validate_dispatch_config(config: ServiceConfig) -> None:
         raise ConfigError(f"Unsupported tracker kind: {config.tracker.kind}")
     if not config.tracker.api_key:
         raise ConfigError("tracker.api_key is required (or set LINEAR_API_KEY).")
-    if not config.cursor.command:
-        raise ConfigError("cursor.command is required.")
+
+    if config.backend == "cursor":
+        if not config.cursor.command:
+            raise ConfigError("cursor.command is required.")
+    elif config.backend == "claude_code":
+        if config.claude_code is None:
+            raise ConfigError(
+                "claude_code section is required when backend is 'claude_code'."
+            )
+        if not config.claude_code.api_key:
+            raise ConfigError(
+                "claude_code.api_key is required (or set ANTHROPIC_API_KEY)."
+            )
