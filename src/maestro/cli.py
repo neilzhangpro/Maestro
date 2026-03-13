@@ -105,6 +105,7 @@ def run_once(
     prompt = render_prompt(
         config.prompt_template,
         issue=issue.to_template_dict(),
+        backend=config.backend,
     )
 
     typer.echo(f"Issue:     {issue.identifier} — {issue.title}")

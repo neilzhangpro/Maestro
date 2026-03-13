@@ -328,7 +328,9 @@ class TestClaudeCodeRunnerCommand:
             cmd = runner._build_command(Path("/ws"), "do stuff", None)
         assert cmd[0] == "/usr/bin/claude"
         assert "-p" in cmd
-        assert "do stuff" in cmd
+        assert "--verbose" in cmd
+        # Prompt is passed via stdin, not as a positional arg
+        assert "do stuff" not in cmd
         assert "--model" in cmd
         assert cmd[cmd.index("--model") + 1] == "opus-4.6"
         assert "--dangerously-skip-permissions" not in cmd
@@ -341,6 +343,20 @@ class TestClaudeCodeRunnerCommand:
             cmd = runner._build_command(Path("/ws"), "prompt", None)
         assert "--dangerously-skip-permissions" in cmd
         assert "--allowedTools" not in cmd
+
+    def test_allowed_tools_per_flag(self):
+        from maestro.agent.claude_code import ClaudeCodeRunner
+        cfg = ClaudeCodeConfig(
+            skip_permissions=False,
+            allowed_tools=["Bash", "Read", "Write"],
+            api_key="key",
+        )
+        runner = ClaudeCodeRunner(cfg)
+        with patch.object(runner, "_resolve_executable", return_value="/usr/bin/claude"):
+            cmd = runner._build_command(Path("/ws"), "prompt", None)
+        # Each tool gets its own --allowedTools flag
+        tool_args = [cmd[i + 1] for i, v in enumerate(cmd) if v == "--allowedTools"]
+        assert tool_args == ["Bash", "Read", "Write"]
 
     def test_max_budget_and_turns(self):
         from maestro.agent.claude_code import ClaudeCodeRunner

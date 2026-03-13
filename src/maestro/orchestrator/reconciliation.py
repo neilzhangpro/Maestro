@@ -38,7 +38,10 @@ class Reconciler:
         self._refresh_tracker_states()
 
     def _check_stalls(self) -> None:
-        stall_ms = self.config.cursor.stall_timeout_ms
+        if self.config.backend == "claude_code" and self.config.claude_code:
+            stall_ms = self.config.claude_code.stall_timeout_ms
+        else:
+            stall_ms = self.config.cursor.stall_timeout_ms
         if stall_ms <= 0:
             return
 

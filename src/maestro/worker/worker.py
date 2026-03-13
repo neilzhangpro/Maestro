@@ -179,6 +179,7 @@ class Worker:
                     issue=issue.to_template_dict(),
                     attempt=attempt,
                     learning_context=learning_context or None,
+                    backend=self.config.backend,
                 )
             except TemplateRenderError:
                 log.exception("Template rendering failed — using fallback prompt.")

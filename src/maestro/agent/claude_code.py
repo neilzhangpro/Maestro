@@ -1,18 +1,13 @@
 """Claude Code CLI runner — alternative agent execution backend.
 
-Launches ``claude -p <prompt> --output-format stream-json`` as a subprocess,
+Launches ``claude -p --output-format stream-json`` as a subprocess,
 reads the NDJSON event stream, and returns a structured :class:`TurnResult`.
 Supports multi-turn via ``--resume <session_id>``.
-
-Stream-json format differences from Cursor:
-- Tool invocations are content blocks inside ``assistant`` messages:
-  ``{"type": "assistant", "message": {"content": [{"type": "tool_use", ...}]}}``.
-  (Cursor uses a top-level ``{"type": "tool_call", ...}`` instead.)
-- Result ``subtype`` may be ``"success"`` or ``"completion"`` (both treated as success).
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import shutil
@@ -20,7 +15,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from maestro.agent.events import AgentEvent, normalize_events, _is_user_input_required
 from maestro.agent.headless import TurnResult
@@ -30,7 +25,7 @@ log = logging.getLogger(__name__)
 
 
 class ClaudeCodeRunner:
-    """Execute a single turn via the Claude Code CLI (``claude -p``)."""
+    """Execute a single turn via the Claude Code CLI."""
 
     def __init__(self, config: ClaudeCodeConfig) -> None:
         self.config = config
@@ -55,6 +50,7 @@ class ClaudeCodeRunner:
 
         process = subprocess.Popen(
             cmd,
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -65,6 +61,15 @@ class ClaudeCodeRunner:
         with self._process_lock:
             self._process = process
 
+        # Feed prompt via stdin for robustness with long/complex prompts,
+        # then close stdin so the CLI knows input is complete.
+        assert process.stdin is not None
+        try:
+            process.stdin.write(prompt)
+            process.stdin.close()
+        except BrokenPipeError:
+            log.warning("Claude Code process closed stdin early.")
+
         try:
             return self._stream_until_done(process, on_event, cancel_event)
         finally:
@@ -72,7 +77,7 @@ class ClaudeCodeRunner:
                 self._process = None
 
     def kill_current_process(self) -> None:
-        """Kill the currently running agent subprocess (if any)."""
+        """Kill the currently running Claude Code subprocess (if any)."""
         with self._process_lock:
             proc = self._process
         if proc and proc.poll() is None:
@@ -91,10 +96,9 @@ class ClaudeCodeRunner:
         model_override: str | None = None,
     ) -> list[str]:
         executable = self._resolve_executable()
+        cmd = [executable, "-p", "--verbose"]
 
-        cmd = [executable, "-p", prompt]
         cmd.extend(["--output-format", "stream-json"])
-        cmd.extend(["--verbose", "--include-partial-messages"])
 
         effective_model = model_override or self.config.model
         if effective_model:
@@ -103,7 +107,8 @@ class ClaudeCodeRunner:
         if self.config.skip_permissions:
             cmd.append("--dangerously-skip-permissions")
         elif self.config.allowed_tools:
-            cmd.extend(["--allowedTools", ",".join(self.config.allowed_tools)])
+            for tool in self.config.allowed_tools:
+                cmd.extend(["--allowedTools", tool])
 
         if self.config.max_turns_per_invocation > 0:
             cmd.extend(["--max-turns", str(self.config.max_turns_per_invocation)])
@@ -117,22 +122,30 @@ class ClaudeCodeRunner:
         if resume_id:
             cmd.extend(["--resume", resume_id])
 
+        # Prompt is passed via stdin (not as a positional arg) to handle
+        # long/complex prompts reliably. See run_turn().
         return cmd
 
     def _resolve_executable(self) -> str:
         cmd = self.config.command
-        resolved = shutil.which(cmd)
-        if resolved:
-            return resolved
+        if shutil.which(cmd):
+            return cmd
+        for candidate in (
+            "/usr/local/bin/claude",
+            "/opt/homebrew/bin/claude",
+        ):
+            if Path(candidate).exists():
+                return candidate
         raise FileNotFoundError(
-            f"Could not find executable: {cmd!r}. "
-            "Install Claude Code with: npm install -g @anthropic-ai/claude-code"
+            f"Could not find Claude Code executable: {cmd}. "
+            "Install with: npm install -g @anthropic-ai/claude-code"
         )
 
     def _build_env(self) -> dict[str, str]:
         env = os.environ.copy()
-        if self.config.api_key:
-            env["ANTHROPIC_API_KEY"] = self.config.api_key
+        api_key = self.config.api_key or env.get("ANTHROPIC_API_KEY")
+        if api_key:
+            env["ANTHROPIC_API_KEY"] = api_key
         return env
 
     # ------------------------------------------------------------------
@@ -145,8 +158,6 @@ class ClaudeCodeRunner:
         on_event: Callable[[AgentEvent], None] | None,
         cancel_event: threading.Event | None = None,
     ) -> TurnResult:
-        import json
-
         session_id = ""
         last_activity = time.monotonic()
         start_time = time.monotonic()
@@ -162,15 +173,13 @@ class ClaudeCodeRunner:
                 continue
 
             last_activity = time.monotonic()
-
-            try:
-                event = json.loads(stripped)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(event, dict):
+            event = self._try_parse_json(stripped)
+            if event is None:
+                log.debug("Skipping non-JSON line: %.100s", stripped)
                 continue
 
-            self._forward_event(event, on_event)
+            log.debug("Raw event: type=%s subtype=%s", event.get("type"), event.get("subtype"))
+            self._forward_events(event, on_event)
 
             etype = event.get("type")
 
@@ -178,8 +187,7 @@ class ClaudeCodeRunner:
                 session_id = event.get("session_id", "")
                 log.info(
                     "Claude Code session started: sid=%s model=%s",
-                    session_id,
-                    event.get("model", "?"),
+                    session_id, event.get("model", "?"),
                 )
 
             elif etype == "assistant":
@@ -192,40 +200,34 @@ class ClaudeCodeRunner:
                 return TurnResult(
                     session_id=event.get("session_id", session_id),
                     duration_ms=event.get("duration_ms", 0),
-                    success=(event.get("subtype") in ("success", "completion")),
+                    success=event.get("subtype") in ("success", "completion"),
                     output_text="".join(output_parts),
                 )
 
             if _is_user_input_required(event):
-                log.warning("Claude Code requested user input — killing process (hard failure).")
+                log.warning("Claude Code requested user input — killing process.")
                 process.kill()
                 return TurnResult(
-                    session_id=session_id,
-                    duration_ms=0,
-                    success=False,
-                    output_text="".join(output_parts),
+                    session_id=session_id, duration_ms=0,
+                    success=False, output_text="".join(output_parts),
                     error="turn_input_required",
                 )
 
-            if _check_stall(last_activity, stall_timeout_s):
+            if self._check_stall(last_activity, stall_timeout_s):
                 log.warning("Claude Code stalled — killing process.")
                 process.kill()
                 return TurnResult(
-                    session_id=session_id,
-                    duration_ms=0,
-                    success=False,
-                    output_text="".join(output_parts),
+                    session_id=session_id, duration_ms=0,
+                    success=False, output_text="".join(output_parts),
                     error="stall_timeout",
                 )
 
-            if _check_turn_timeout(start_time, turn_timeout_s):
+            if self._check_turn_timeout(start_time, turn_timeout_s):
                 log.warning("Claude Code turn timeout — killing process.")
                 process.kill()
                 return TurnResult(
-                    session_id=session_id,
-                    duration_ms=0,
-                    success=False,
-                    output_text="".join(output_parts),
+                    session_id=session_id, duration_ms=0,
+                    success=False, output_text="".join(output_parts),
                     error="turn_timeout",
                 )
 
@@ -233,36 +235,50 @@ class ClaudeCodeRunner:
                 log.warning("Cancel requested — killing Claude Code process.")
                 process.kill()
                 return TurnResult(
-                    session_id=session_id,
-                    duration_ms=0,
-                    success=False,
-                    output_text="".join(output_parts),
+                    session_id=session_id, duration_ms=0,
+                    success=False, output_text="".join(output_parts),
                     error="cancelled_by_user",
                 )
 
         self._wait_process(process)
-        stderr_tail = _read_stderr(process)
+        stderr_tail = self._read_stderr(process)
         return TurnResult(
             session_id=session_id,
             duration_ms=int((time.monotonic() - start_time) * 1000),
             success=(process.returncode == 0),
             output_text="".join(output_parts),
-            error=(
-                f"process_exit({process.returncode}): {stderr_tail}"
-                if process.returncode
-                else None
-            ),
+            error=f"process_exit({process.returncode}): {stderr_tail}" if process.returncode else None,
         )
 
     @staticmethod
-    def _forward_event(
-        raw: dict,
+    def _try_parse_json(line: str) -> dict[str, Any] | None:
+        try:
+            obj = json.loads(line)
+            return obj if isinstance(obj, dict) else None
+        except json.JSONDecodeError:
+            return None
+
+    @staticmethod
+    def _forward_events(
+        raw: dict[str, Any],
         on_event: Callable[[AgentEvent], None] | None,
     ) -> None:
         if on_event is None:
             return
         for evt in normalize_events(raw):
             on_event(evt)
+
+    @staticmethod
+    def _check_stall(last_activity: float, timeout_s: float) -> bool:
+        if timeout_s <= 0:
+            return False
+        return (time.monotonic() - last_activity) > timeout_s
+
+    @staticmethod
+    def _check_turn_timeout(start: float, timeout_s: float) -> bool:
+        if timeout_s <= 0:
+            return False
+        return (time.monotonic() - start) > timeout_s
 
     @staticmethod
     def _wait_process(process: subprocess.Popen[str]) -> None:
@@ -272,23 +288,11 @@ class ClaudeCodeRunner:
             process.kill()
             process.wait(timeout=2)
 
-
-def _check_stall(last_activity: float, timeout_s: float) -> bool:
-    if timeout_s <= 0:
-        return False
-    return (time.monotonic() - last_activity) > timeout_s
-
-
-def _check_turn_timeout(start: float, timeout_s: float) -> bool:
-    if timeout_s <= 0:
-        return False
-    return (time.monotonic() - start) > timeout_s
-
-
-def _read_stderr(process: subprocess.Popen[str]) -> str:
-    if process.stderr is None:
-        return ""
-    try:
-        return process.stderr.read().strip()[-500:]
-    except Exception:
-        return ""
+    @staticmethod
+    def _read_stderr(process: subprocess.Popen[str]) -> str:
+        if process.stderr is None:
+            return ""
+        try:
+            return process.stderr.read().strip()[-500:]
+        except Exception:
+            return ""

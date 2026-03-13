@@ -1,7 +1,7 @@
 FROM python:3.11-slim AS base
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        curl ca-certificates git \
+        curl ca-certificates git nodejs npm \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -25,6 +25,13 @@ COPY scripts/install-cursor-cli.sh /tmp/install-cursor-cli.sh
 RUN chmod +x /tmp/install-cursor-cli.sh && \
     CURSOR_AGENT_VERSION=${CURSOR_AGENT_VERSION} /tmp/install-cursor-cli.sh && \
     rm -f /tmp/install-cursor-cli.sh
+
+# ---------------------------------------------------------------
+# Claude Code CLI — installed via npm from @anthropic-ai/claude-code
+# ---------------------------------------------------------------
+RUN npm install -g @anthropic-ai/claude-code && \
+    claude --version 2>/dev/null && echo "Claude Code CLI installed." || \
+    echo "Warning: claude --version check failed (may need runtime API key)."
 
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh

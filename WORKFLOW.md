@@ -1,4 +1,6 @@
 ---
+backend: cursor
+
 tracker:
   kind: linear
   api_key: $LINEAR_API_KEY
@@ -294,7 +296,7 @@ hooks:
 
     - The working directory must be a git repository
     - Remote `origin` must be configured
-    - Repository: `Novamind-Labs-Ltd/novie` (git root is `novie/`, not workspace root)
+    - Repository: `$GITHUB_OWNER/$GITHUB_REPO` (set via environment variables)
 
     ## Step-by-Step Procedure
 
@@ -650,7 +652,7 @@ hooks:
     ## Prerequisites
 
     - A PR has been created (you need the PR number)
-    - Repository: `Novamind-Labs-Ltd/novie`
+    - Repository: `$GITHUB_OWNER/$GITHUB_REPO` (set via environment variables)
     - Git credentials available in `~/.git-credentials`
 
     ## Step-by-Step Procedure
@@ -671,7 +673,7 @@ hooks:
     curl -s \
       -H "Authorization: token $TOKEN" \
       -H "Accept: application/vnd.github+json" \
-      "https://api.github.com/repos/Novamind-Labs-Ltd/novie/commits/<HEAD_SHA>/check-runs" \
+      "https://api.github.com/repos/$GITHUB_OWNER/$GITHUB_REPO/commits/<HEAD_SHA>/check-runs" \
       | python3 -c "
     import sys, json
     d = json.load(sys.stdin)
@@ -713,7 +715,7 @@ hooks:
     curl -s \
       -H "Authorization: token $TOKEN" \
       -H "Accept: application/vnd.github+json" \
-      "https://api.github.com/repos/Novamind-Labs-Ltd/novie/actions/runs?branch=<BRANCH>&per_page=5" \
+      "https://api.github.com/repos/$GITHUB_OWNER/$GITHUB_REPO/actions/runs?branch=<BRANCH>&per_page=5" \
       | python3 -c "
     import sys, json
     d = json.load(sys.stdin)
@@ -728,7 +730,7 @@ hooks:
     curl -s \
       -H "Authorization: token $TOKEN" \
       -H "Accept: application/vnd.github+json" \
-      "https://api.github.com/repos/Novamind-Labs-Ltd/novie/actions/runs/<RUN_ID>/jobs" \
+      "https://api.github.com/repos/$GITHUB_OWNER/$GITHUB_REPO/actions/runs/<RUN_ID>/jobs" \
       | python3 -c "
     import sys, json
     d = json.load(sys.stdin)
@@ -744,7 +746,7 @@ hooks:
     curl -s -L \
       -H "Authorization: token $TOKEN" \
       -H "Accept: application/vnd.github+json" \
-      "https://api.github.com/repos/Novamind-Labs-Ltd/novie/actions/jobs/<JOB_ID>/logs" \
+      "https://api.github.com/repos/$GITHUB_OWNER/$GITHUB_REPO/actions/jobs/<JOB_ID>/logs" \
       | tail -150
     ```
 
@@ -800,7 +802,7 @@ hooks:
     SHA="<HEAD_SHA>"
     for i in $(seq 1 20); do
       RESULT=$(curl -s -H "Authorization: token $TOKEN" -H "Accept: application/vnd.github+json" \
-        "https://api.github.com/repos/Novamind-Labs-Ltd/novie/commits/$SHA/check-runs" \
+        "https://api.github.com/repos/$GITHUB_OWNER/$GITHUB_REPO/commits/$SHA/check-runs" \
         | python3 -c "
     import sys, json
     d = json.load(sys.stdin)
@@ -1028,9 +1030,27 @@ hooks:
       }
     }
     MCP_EOF
+    # Claude Code config — mirror MCP and aggregate rules into CLAUDE.md
+    mkdir -p .claude
+    cp .cursor/mcp.json .claude/mcp.json
+    {
+      echo "# Project Rules"
+      echo ""
+      echo "These rules apply to all code changes in this repository."
+      echo ""
+      for f in .cursor/rules/*.mdc; do
+        [ -f "$f" ] || continue
+        # Strip YAML front matter, keep the markdown body
+        sed -n '/^---$/,/^---$/!p' "$f"
+        echo ""
+        echo "---"
+        echo ""
+      done
+    } > CLAUDE.md
+    echo "[workspace-init] Generated .claude/mcp.json and CLAUDE.md"
     if [ -n "${GITHUB_TOKEN:-}" ]; then
       echo "[workspace-init] Cloning repository..."
-      git clone --depth=1 "https://x-access-token:${GITHUB_TOKEN}@github.com/Novamind-Labs-Ltd/novie.git" . 2>/dev/null || true
+      git clone --depth=1 "https://x-access-token:${GITHUB_TOKEN}@github.com/$GITHUB_OWNER/$GITHUB_REPO.git" . 2>/dev/null || true
     fi
   before_run: |
     if [ -d .git ]; then
@@ -1153,6 +1173,17 @@ cursor:
   turn_timeout_ms: 3600000
   stall_timeout_ms: 300000
 
+claude_code:
+  command: claude
+  model: claude-sonnet-4-20250514
+  plan_model: claude-sonnet-4-20250514
+  api_key: $ANTHROPIC_API_KEY
+  skip_permissions: false
+  max_turns_per_invocation: 0
+  max_budget_usd: 0
+  turn_timeout_ms: 3600000
+  stall_timeout_ms: 300000
+
 agent:
   auto_dispatch: false
   max_concurrent_agents: 2
@@ -1191,19 +1222,16 @@ You are working on issue **{{ issue.identifier }}: {{ issue.title }}**.
 {% endfor %}{% endif %}
 
 ## Instructions
-1. **Invoke the `git-branch-sync` skill** to ensure you are on a dedicated feature branch based on the latest `origin/main`. This is mandatory before any code changes.
+1. **Branch setup** — Read and follow `.cursor/skills/git-branch-sync/SKILL.md` to ensure you are on a dedicated feature branch based on the latest `origin/main`. This is mandatory before any code changes.
 2. Read the codebase and understand the project structure.
 3. Implement the changes described above.
 4. Write or update tests for your changes.
 5. Ensure all existing tests still pass.
 6. Check `sandbox-test-results.txt` if it exists — it contains results from the automated sandbox test runner that ran after the previous turn. If it shows `FAILED`, fix the reported errors before proceeding.
 7. If `SANDBOX_TEST_FAILED` file exists in the workspace root, tests have not yet passed — do not move to Human Review until it is gone.
-8. When the implementation is complete and local tests pass, **invoke the `git-branch-sync` skill again** (pre-PR checklist) to rebase onto latest `origin/main` and resolve any conflicts, then create a Pull Request using the `pr-create-describe` skill.
-9. After the PR is created, **invoke the `ci-monitor-fix` skill** to monitor CI/CD pipeline status:
-   - Poll CI checks until all complete.
-   - If any check fails, retrieve the failure logs, fix the code, commit and push.
-   - Repeat until ALL CI checks pass.
-10. After ALL CI checks pass, update the Linear issue state to **In Review**.
+8. **Create PR** — Read and follow `.cursor/skills/pr-create-describe/SKILL.md` to rebase onto latest `origin/main`, resolve any conflicts, and create a Pull Request.
+9. **Monitor CI** — Read and follow `.cursor/skills/ci-monitor-fix/SKILL.md` to monitor CI/CD pipeline status, fix failures, and re-push until all checks pass.
+10. **Update Linear** — Read and follow `.cursor/skills/linear-update-on-pr/SKILL.md` to move the issue to **In Review** after CI passes.
     - Maestro's CI Watcher will automatically verify the result and move the issue to **Done** when confirmed, or back to **In Progress** if a regression is detected.
 
 ## Decision Policy
