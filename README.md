@@ -13,9 +13,8 @@
 </p>
 
 <p align="center">
-  Maestro turns Linear issues into AI-agent-powered coding runs inside isolated workspaces,
-  with orchestration, cross-run learning, and human control built in.
-  Supports <strong>Cursor ACP</strong> and <strong>Claude Code</strong> as execution backends.
+  Maestro turns Linear issues into Cursor-powered coding runs inside isolated workspaces,
+  with orchestration, visibility, and human control built in.
 </p>
 
 ---
@@ -29,9 +28,8 @@ It connects the source of work, the execution environment, and the orchestration
 layer into one repeatable system:
 
 - `Linear` is the source of truth for work, filtered by team and assignee.
-- `Cursor ACP` / `Claude Code` execute agent runs inside isolated workspaces (pluggable backends).
+- `Cursor ACP` executes the agent run inside isolated workspaces.
 - `Pipeline Engine` orchestrates parse → execute → update in a controlled sequence.
-- `Execution Memory` records per-turn outcomes and injects cross-run learning into prompts.
 - `FastAPI + WebSocket` expose service state and realtime visibility.
 - `TUI Workbench` provides a terminal-native interface for monitoring and control.
 
@@ -50,10 +48,10 @@ Maestro is designed for that layer.
 
 - Filter Linear issues by **team and assignee** — manage only your own work in shared workspaces
 - Turn `Linear` issues into executable coding runs with isolated per-issue workspaces
-- **Multi-backend support** — run agents via **Cursor ACP** or **Claude Code** CLI, selected in `WORKFLOW.md`
+- Execute `Cursor` agent sessions in a controlled multi-turn pipeline (up to 10 turns)
 - **Dual-model strategy** — plan with Opus, code with Sonnet (configurable `plan_model` + `model`)
-- **Execution memory** — record per-turn outcomes to a shared JSONL log; inject historical insights (success rate, failure patterns, most-used tools) into future prompts so agents learn from past runs
-- Run up to 2 concurrent agent tasks with automatic retry and stall detection
+- **Safe dispatch control** — `auto_dispatch: false` (default) prevents automatic agent dispatch; use TUI for manual runs in local dev, enable for Docker production
+- Run up to N concurrent agent tasks with automatic retry (max 3 retries with exponential backoff), stall detection, and 10-minute cooldown between runs
 - **Automated workspace bootstrap** — `after_create` hook clones the repo; `before_run` hook auto-rebases onto latest `origin/main` every turn
 - Inject **global Cursor rules** (code quality, style, testing, plan-before-coding) and **project Skills** (git, PR, CI, Linear) into every workspace
 - Configure **5 MCPs** (Linear, Playwright, GitHub, GitNexus, Greptile) in every agent workspace
@@ -63,7 +61,7 @@ Maestro is designed for that layer.
 - **E2E Test gate** — TUI provides a `🧪 E2E Test` panel for human end-to-end testing; on pass, converts draft PR to ready and marks issue Done
 - Human-in-the-loop via `Human Review` handoff state — agent pauses, workspace preserved
 - Portable Docker deployment — cursor-agent CLI downloaded automatically at build time
-- Terminal workbench (`make tui`) for real-time monitoring, issue management, and E2E testing
+- Terminal workbench (`make tui`) with **← Back navigation** for real-time monitoring, issue management, and E2E testing
 
 ## TUI Workbench
 
@@ -79,20 +77,15 @@ Maestro is designed for that layer.
 flowchart LR
     A[Linear Issues] --> B[Maestro Scheduler]
     B --> C[Pipeline Engine]
-    C --> D{Agent Backend}
-    D -->|Cursor ACP| E1[Cursor Runner]
-    D -->|Claude Code| E2[Claude Runner]
-    E1 --> F[Isolated Workspace]
-    E2 --> F
-    F --> G[OpenSandbox Tests]
-    G --> C
-    F -->|turn results| H[Execution Memory]
-    H -->|learning context| C
-    B --> I[FastAPI Service]
-    I --> J[TUI Workbench]
-    B --> K[CI Watcher]
-    K -->|CI pass| L[Done / Human Review]
-    K -->|CI fail| B
+    C --> D[Cursor Agent Runner]
+    D --> E[Isolated Workspace]
+    B --> F[FastAPI Service]
+    F --> G[TUI Workbench]
+    E --> H[OpenSandbox Tests]
+    H --> D
+    B --> I[CI Watcher]
+    I -->|CI pass| J[Done / Human Review]
+    I -->|CI fail| B
 ```
 
 ## Repository Layout
@@ -100,10 +93,9 @@ flowchart LR
 ```text
 .
 ├── src/maestro/           # Core service
-│   ├── agent/             # Cursor + Claude Code runners, event normalization
+│   ├── agent/             # Headless runner, event normalization
 │   ├── api/               # FastAPI routes (issues, runs, state, refresh)
 │   ├── github/            # GitHub REST client (PR lookup, CI checks)
-│   ├── learning/          # Execution history recorder, cross-run learning
 │   ├── linear/            # Linear GraphQL client and models
 │   ├── orchestrator/      # Scheduler, reconciler, retry, CI watcher, concurrency
 │   ├── tui/               # Terminal workbench (rich + questionary)
@@ -154,13 +146,15 @@ No host-side cursor installation required.
 # Install dependencies
 make install
 
-# Start Maestro
-set -a && source .env && set +a
+# Start Maestro (auto-sources .env; auto_dispatch defaults to false)
 make dev
 
-# Open TUI in another terminal
+# Open TUI in another terminal — run issues manually from here
 make tui
 ```
+
+> **Note:** In local mode, `auto_dispatch` defaults to `false` so Maestro won't
+> automatically open Cursor windows. Use the TUI to select and run individual issues.
 
 ## Configuration
 
@@ -180,6 +174,7 @@ cursor:
   plan_model: opus-4.6                 # model for planning turn (turn 1)
 
 agent:
+  auto_dispatch: false                 # false = manual via TUI; true = auto-dispatch
   max_concurrent_agents: 2
   max_turns: 10
 
@@ -192,8 +187,9 @@ github:
   ci_fail_target_state: In Progress    # where to move on CI fail (triggers re-fix)
 ```
 
-Use `tracker.assignee: "me"` in a multi-person Linear workspace to ensure Maestro
-only picks up issues assigned to you.
+**Dispatch modes:**
+- `auto_dispatch: false` (default) — Scheduler monitors state only; use `make tui` to manually run issues. Best for **local development**.
+- `auto_dispatch: true` — Scheduler auto-dispatches issues to Cursor agents. Best for **Docker production** (`make up`).
 
 ## Makefile Targets
 
@@ -232,7 +228,7 @@ Linear Todo ──► In Progress ──► Draft PR ──► In Review ──�
                                                     Issue → Done   In Progress
 ```
 
-1. **Scheduler** picks up `Todo` issues from Linear and dispatches them to workers
+1. **Scheduler** picks up active issues from Linear (when `auto_dispatch: true`) or waits for manual trigger via TUI
 2. **Worker** runs the Cursor agent through multi-turn execution (plan → code → test → PR)
 3. Agent creates a **draft PR** and moves the issue to **In Review** — the PR stays in draft throughout CI and review
 4. **CI Watcher** monitors GitHub CI; on success, transitions to **Human Review**; on failure, moves back to **In Progress** for automated fix
@@ -265,28 +261,15 @@ That system is the harness.
 
 ### Multi-Runner Architecture
 
-Maestro supports pluggable agent execution backends. The active backend is
-selected via `WORKFLOW.md` configuration:
+Maestro currently uses **Cursor ACP** as its sole agent execution backend.
+The architecture is designed to evolve into a multi-runner system where different
+LLM backends can be used interchangeably:
 
 | Runner | Status | Description |
 |--------|--------|-------------|
-| **Cursor ACP** | Stable | Default backend. Headless CLI with `stream-json` output, multi-turn sessions, MCP support. |
-| **Claude Code** | Implemented | Anthropic's CLI agent (`claude -p --output-format stream-json`). `ClaudeCodeRunner` shares the `AgentRunner` protocol with `HeadlessRunner`. Configure via the `claude_code` section in `WORKFLOW.md`. |
-| **Codex CLI** | Planned | OpenAI's open-source CLI agent (`codex --full-auto`). Will require adapter for its distinct event format and approval model. |
-
-### SKILL Self-Learning
-
-Maestro now includes **execution memory** — a cross-run learning system that
-records per-turn outcomes and injects historical insights into agent prompts.
-
-| Stage | Status | Description |
-|-------|--------|-------------|
-| **Stage 0** — Passive Logging | Done | JSONL-based execution history at `workspace_root/.maestro/run_history.jsonl` |
-| **Stage 1** — Learning Annotations | Done | Summarised history (success rate, failure patterns, top tools) injected into prompts |
-| **Stage 2** — SKILL Incremental Patches | Planned | LLM-generated addenda appended to SKILL files based on failure patterns |
-| **Stage 3** — Full Self-Mutation | Planned | LLM rewrites SKILL bodies with sandbox validation and auto-rollback |
-
-See [`docs/skill-evolution-roadmap.md`](docs/skill-evolution-roadmap.md) for the full evolution plan.
+| **Cursor ACP** | Stable | Current default. Headless CLI with `stream-json` output, multi-turn sessions, MCP support. |
+| **Claude Code** | Planned | Anthropic's CLI agent (`claude -p --output-format stream-json`). Similar event protocol to Cursor, native tool use, no MCP config needed. |
+| **Codex CLI** | Planned | OpenAI's open-source CLI agent (`codex --full-auto`). Runs locally with sandboxed execution. Will require adapter for its distinct event format and approval model. |
 
 ### Other Planned Enhancements
 
@@ -298,7 +281,12 @@ See [`docs/skill-evolution-roadmap.md`](docs/skill-evolution-roadmap.md) for the
 
 ## Status
 
-**v0.4.0** — Adds multi-backend agent support (Cursor ACP + Claude Code),
-SKILL self-learning with execution memory and prompt injection (Stages 0-1),
-on top of the existing CI monitoring, E2E testing gates, draft PR workflow,
-dual-model strategy, and robust Git synchronization.
+**v0.4.0** — Safe dispatch control, retry hardening, and TUI navigation improvements.
+
+**Changelog (v0.4.0):**
+- Add `auto_dispatch` config (default `false`) — prevents uncontrolled Cursor spawning in local dev
+- Add 10-minute cooldown after normal worker completion to prevent re-dispatch loops
+- Cap abnormal retries at 3 with exponential backoff (10s → 20s → 40s)
+- Add `← Back` navigation to all TUI sub-menus
+- `make dev` now auto-sources `.env` file
+- Configure Noval-X Linear workspace with `Backlog` state support

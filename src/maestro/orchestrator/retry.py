@@ -12,6 +12,9 @@ from maestro.orchestrator.state import OrchestratorState, RetryEntry
 log = logging.getLogger(__name__)
 
 
+MAX_RETRIES = 3
+
+
 class RetryQueue:
     """Schedule and manage retry timers for failed or continued issues."""
 
@@ -32,16 +35,20 @@ class RetryQueue:
         identifier: str,
         attempt: int,
         error: str | None,
-        *,
-        continuation: bool = False,
-    ) -> None:
-        if continuation:
-            delay_ms = 1_000
-        else:
-            delay_ms = min(
-                10_000 * (2 ** max(attempt - 1, 0)),
-                self.max_retry_backoff_ms,
+    ) -> bool:
+        """Schedule a retry. Returns False (and releases claim) if max retries exceeded."""
+        if attempt > MAX_RETRIES:
+            log.warning(
+                "Max retries (%d) exceeded for %s — releasing.",
+                MAX_RETRIES, identifier,
             )
+            self._state.release_claim(issue_id)
+            return False
+
+        delay_ms = min(
+            10_000 * (2 ** max(attempt - 1, 0)),
+            self.max_retry_backoff_ms,
+        )
 
         due_at = time.monotonic() * 1000 + delay_ms
         timer = threading.Timer(delay_ms / 1000, self._timer_fired, args=[issue_id])
@@ -59,8 +66,8 @@ class RetryQueue:
         timer.start()
 
         log.info(
-            "Retry scheduled: %s attempt=%d delay=%dms (continuation=%s) error=%s",
-            identifier, attempt, delay_ms, continuation, error,
+            "Retry scheduled: %s attempt=%d delay=%dms error=%s",
+            identifier, attempt, delay_ms, error,
         )
 
     def cancel(self, issue_id: str) -> None:

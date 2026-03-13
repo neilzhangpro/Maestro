@@ -68,11 +68,17 @@ class Scheduler:
 
         self._startup_terminal_cleanup()
         self._schedule_tick(delay_ms=0)
-        log.info(
-            "Scheduler running — poll=%dms max_agents=%d",
-            self.config.polling.interval_ms,
-            self.config.agent.max_concurrent_agents,
-        )
+        if self.config.agent.auto_dispatch:
+            log.info(
+                "Scheduler running — poll=%dms max_agents=%d auto_dispatch=ON",
+                self.config.polling.interval_ms,
+                self.config.agent.max_concurrent_agents,
+            )
+        else:
+            log.info(
+                "Scheduler running — poll=%dms auto_dispatch=OFF (use TUI to run issues manually)",
+                self.config.polling.interval_ms,
+            )
 
     def stop(self) -> None:
         log.info("Scheduler stopping.")
@@ -149,17 +155,18 @@ class Scheduler:
         # 4. Sort
         candidates = self._sort_candidates(candidates)
 
-        # 5. Dispatch
+        # 5. Dispatch (only when auto_dispatch is enabled)
         dispatched = 0
-        for issue in candidates:
-            if self._concurrency.available_global_slots(self.state.running_count()) <= 0:
-                break
-            if self._should_dispatch(issue):
-                self._dispatch_issue(issue, attempt=None)
-                dispatched += 1
+        if self.config.agent.auto_dispatch:
+            for issue in candidates:
+                if self._concurrency.available_global_slots(self.state.running_count()) <= 0:
+                    break
+                if self._should_dispatch(issue):
+                    self._dispatch_issue(issue, attempt=None)
+                    dispatched += 1
 
-        if dispatched:
-            log.info("Dispatched %d issue(s).", dispatched)
+            if dispatched:
+                log.info("Dispatched %d issue(s).", dispatched)
 
         # 6. CI watcher — check issues in watch states
         try:
@@ -194,6 +201,8 @@ class Scheduler:
         if not issue.id or not issue.identifier or not issue.title:
             return False
         if self.state.is_claimed(issue.id):
+            return False
+        if self.state.in_cooldown(issue.id):
             return False
         if not self._concurrency.can_dispatch(issue, self.state.running):
             return False
@@ -280,18 +289,14 @@ class Scheduler:
             current_attempt = None
 
         if reason == "normal":
-            log.info("Worker %s exited normally.", identifier)
-            self.state.completed.add(issue_id)
-            self._retry_queue.schedule(
-                issue_id, identifier, attempt=1,
-                error=None, continuation=True,
-            )
+            log.info("Worker %s exited normally — cooldown applied.", identifier)
+            self.state.mark_completed(issue_id)
         else:
             next_attempt = (current_attempt or 0) + 1
             log.warning("Worker %s exited abnormally: %s", identifier, error)
             self._retry_queue.schedule(
                 issue_id, identifier, attempt=next_attempt,
-                error=error, continuation=False,
+                error=error,
             )
 
         self._notify()

@@ -74,6 +74,8 @@ ACTIONS_DISCONNECTED = [
 
 MOVABLE_STATES = ["Backlog", "Todo", "In Progress", "In Review", "Done", "Human Review", "Cancelled"]
 
+BACK_LABEL = "← Back"
+
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -279,11 +281,11 @@ def action_run_issue(
         console.print("[yellow]No dispatchable issues.[/yellow]")
         return
 
-    choices = [f"{i['identifier']}  {i['title'][:50]}" for i in candidates]
+    choices = [f"{i['identifier']}  {i['title'][:50]}" for i in candidates] + [BACK_LABEL]
     answer = questionary.select(
         "Select issue to run:", choices=choices, style=PROMPT_STYLE,
     ).ask()
-    if not answer:
+    if not answer or answer == BACK_LABEL:
         return
 
     ref = answer.split()[0]
@@ -327,11 +329,12 @@ def action_stop_worker(
             except (ValueError, TypeError):
                 pass
         choices.append(f"{ident}  turn={turn}  {uptime}  {evt}")
+    choices.append(BACK_LABEL)
 
     answer = questionary.select(
         "Select worker to stop:", choices=choices, style=PROMPT_STYLE,
     ).ask()
-    if not answer:
+    if not answer or answer == BACK_LABEL:
         return
 
     ref = answer.split()[0]
@@ -362,11 +365,11 @@ def action_move_issue(
         console.print("[yellow]No issues.[/yellow]")
         return
 
-    choices = [f"{i['identifier']}  [{i['state']}]  {i['title'][:40]}" for i in issues]
+    choices = [f"{i['identifier']}  [{i['state']}]  {i['title'][:40]}" for i in issues] + [BACK_LABEL]
     answer = questionary.select(
         "Select issue:", choices=choices, style=PROMPT_STYLE,
     ).ask()
-    if not answer:
+    if not answer or answer == BACK_LABEL:
         return
 
     ref = answer.split()[0]
@@ -374,11 +377,11 @@ def action_move_issue(
     if not issue:
         return
 
-    targets = [s for s in MOVABLE_STATES if s != issue.get("state")]
+    targets = [s for s in MOVABLE_STATES if s != issue.get("state")] + [BACK_LABEL]
     new_state = questionary.select(
         f"Move {ref} to:", choices=targets, style=PROMPT_STYLE,
     ).ask()
-    if not new_state:
+    if not new_state or new_state == BACK_LABEL:
         return
 
     try:
@@ -399,11 +402,11 @@ def action_issue_detail(
         console.print("[yellow]No issues.[/yellow]")
         return
 
-    choices = [f"{i['identifier']}  {i['title'][:50]}" for i in issues]
+    choices = [f"{i['identifier']}  {i['title'][:50]}" for i in issues] + [BACK_LABEL]
     answer = questionary.select(
         "Select issue:", choices=choices, style=PROMPT_STYLE,
     ).ask()
-    if not answer:
+    if not answer or answer == BACK_LABEL:
         return
 
     ref = answer.split()[0]
@@ -475,11 +478,11 @@ def action_e2e_test(
     choices = [
         f"{i['identifier']}  {i['title'][:50]}"
         for i in candidates
-    ]
+    ] + [BACK_LABEL]
     answer = questionary.select(
         "Select issue to test:", choices=choices, style=PROMPT_STYLE,
     ).ask()
-    if not answer:
+    if not answer or answer == BACK_LABEL:
         return
 
     ref = answer.split()[0]
@@ -508,11 +511,11 @@ def action_e2e_test(
 
     verdict = questionary.select(
         "Test result:",
-        choices=["✅ Pass — move to Done", "❌ Fail — send back for fix"],
+        choices=["✅ Pass — move to Done", "❌ Fail — send back for fix", BACK_LABEL],
         style=PROMPT_STYLE,
     ).ask()
 
-    if verdict is None:
+    if verdict is None or verdict == BACK_LABEL:
         return
 
     if "Pass" in verdict:

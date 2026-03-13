@@ -3,9 +3,9 @@ tracker:
   kind: linear
   api_key: $LINEAR_API_KEY
   project_slug: ""
-  team_id: "978fa11d-5b2d-41e1-9aa3-28e350d45529"
-  assignee: "me"
-  active_states: [Todo, In Progress]
+  team_id: "e9628d4c-7a56-454b-964d-6276b7138652"
+  assignee: ""
+  active_states: [Backlog, Todo, In Progress]
   terminal_states: [Done, Cancelled, Closed]
   handoff_states: [Human Review, In Review]
 
@@ -1154,6 +1154,7 @@ cursor:
   stall_timeout_ms: 300000
 
 agent:
+  auto_dispatch: false
   max_concurrent_agents: 2
   max_turns: 10
   max_retry_backoff_ms: 300000

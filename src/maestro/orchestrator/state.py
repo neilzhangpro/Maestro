@@ -69,6 +69,9 @@ class AgentTotals:
         return {"seconds_running": round(self.seconds_running, 1)}
 
 
+COOLDOWN_SECONDS = 600
+
+
 class OrchestratorState:
     """Thread-safe in-memory state owned by the orchestrator.
 
@@ -81,6 +84,7 @@ class OrchestratorState:
         self.claimed: set[str] = set()
         self.retry_attempts: dict[str, RetryEntry] = {}
         self.completed: set[str] = set()
+        self._cooldowns: dict[str, datetime] = {}
         self.totals = AgentTotals()
 
     def add_running(self, entry: RunningEntry) -> None:
@@ -101,6 +105,31 @@ class OrchestratorState:
         with self._lock:
             self.claimed.discard(issue_id)
             self.retry_attempts.pop(issue_id, None)
+
+    def mark_completed(self, issue_id: str) -> None:
+        """Release claim and enter cooldown so the issue is not re-dispatched immediately."""
+        with self._lock:
+            self.claimed.discard(issue_id)
+            self.retry_attempts.pop(issue_id, None)
+            self.completed.add(issue_id)
+            self._cooldowns[issue_id] = datetime.now(timezone.utc)
+
+    def in_cooldown(self, issue_id: str) -> bool:
+        with self._lock:
+            ts = self._cooldowns.get(issue_id)
+            if ts is None:
+                return False
+            elapsed = (datetime.now(timezone.utc) - ts).total_seconds()
+            if elapsed >= COOLDOWN_SECONDS:
+                self._cooldowns.pop(issue_id, None)
+                self.completed.discard(issue_id)
+                return False
+            return True
+
+    def clear_cooldown(self, issue_id: str) -> None:
+        with self._lock:
+            self._cooldowns.pop(issue_id, None)
+            self.completed.discard(issue_id)
 
     def set_retry(self, entry: RetryEntry) -> None:
         with self._lock:

@@ -187,6 +187,7 @@ class GitHubConfig:
 
 @dataclass(frozen=True)
 class AgentConfig:
+    auto_dispatch: bool = False
     max_concurrent_agents: int = 10
     max_turns: int = 3
     max_retry_backoff_ms: int = 300_000
@@ -357,7 +358,11 @@ def _parse_agent(raw: dict[str, Any]) -> AgentConfig:
             except (TypeError, ValueError):
                 pass
 
+    auto_val = raw.get("auto_dispatch")
+    auto_dispatch = bool(auto_val) if auto_val is not None else False
+
     return AgentConfig(
+        auto_dispatch=auto_dispatch,
         max_concurrent_agents=_int(
             raw.get("max_concurrent_agents"), "agent.max_concurrent_agents", default=10,
         ),

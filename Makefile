@@ -50,7 +50,7 @@ install:
 ## Start Maestro locally (requires .venv and a running opensandbox-server)
 dev:
 	@if [ ! -f .env ]; then cp .env.example .env; echo "Created .env from .env.example — fill in your keys."; fi
-	.venv/bin/maestro start
+	set -a && . ./.env && set +a && .venv/bin/maestro start
 
 ## Launch the terminal workbench (connect to running Maestro)
 tui:
