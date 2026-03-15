@@ -10,6 +10,7 @@ from typing import Any, Callable
 
 from maestro.agent.events import AgentEvent
 from maestro.config import LinearConfig
+from maestro.learning.evolution import EvolutionLoop
 from maestro.linear.client import LinearClient
 from maestro.linear.models import Issue
 from maestro.orchestrator.ci_watcher import CIWatcher
@@ -49,6 +50,7 @@ class Scheduler:
             on_terminate=self._terminate_running,
         )
         self._ci_watcher = CIWatcher(config, self._linear)
+        self._evolution_loop = EvolutionLoop(config)
 
         self._tick_timer: threading.Timer | None = None
         self._stop_event = threading.Event()
@@ -106,6 +108,7 @@ class Scheduler:
 
         self._ci_watcher.close()
         self._ci_watcher = CIWatcher(config, self._linear)
+        self._evolution_loop.reload_config(config)
 
         log.info("Scheduler config reloaded.")
 
@@ -174,7 +177,13 @@ class Scheduler:
         except Exception:
             log.warning("CI watcher error", exc_info=True)
 
-        # 7. Notify + schedule next
+        # 7. Skill evolution (runs only when no agents are active)
+        try:
+            self._evolution_loop.maybe_evolve(running_count=self.state.running_count())
+        except Exception:
+            log.warning("Evolution loop error", exc_info=True)
+
+        # 8. Notify + schedule next
         self._notify()
         self._schedule_tick(self.config.polling.interval_ms)
 

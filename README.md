@@ -64,6 +64,7 @@ Maestro is designed for that layer.
 - Human-in-the-loop via `Human Review` handoff state — agent pauses, workspace preserved
 - **Docker-only deployment** — agents run inside containers, avoiding local client sprawl
 - Terminal workbench (`make tui`) with **← Back navigation** for real-time monitoring, issue management, and E2E testing
+- **Skill self-evolution** — execution history is automatically analysed to patch existing Skills and crystallise recurring workflows into new Skills (see [Skill Evolution](#skill-evolution))
 
 ## TUI Workbench
 
@@ -91,6 +92,11 @@ flowchart LR
     B --> K[CI Watcher]
     K -->|CI pass| L[Done / Human Review]
     K -->|CI fail| B
+    B --> M[Evolution Loop]
+    M -->|analyse history| N[SkillAnalyser / FlowDistiller]
+    N -->|generate via Runner| O[SkillMutator]
+    O -->|patch / create| P[SkillStore]
+    P -->|before_run sync| G
 ```
 
 ## Repository Layout
@@ -101,6 +107,14 @@ flowchart LR
 │   ├── agent/             # Cursor headless runner, Claude Code runner, event normalization
 │   ├── api/               # FastAPI routes (issues, runs, state, refresh)
 │   ├── github/            # GitHub REST client (PR lookup, CI checks)
+│   ├── learning/          # Skill evolution subsystem
+│   │   ├── recorder.py        # RunRecord v2 — per-turn execution history (JSONL)
+│   │   ├── flow_recorder.py   # FlowRecord — full tool-call chain capture per issue run
+│   │   ├── skill_store.py     # SkillStore — read/write/patch/create SKILL.md files
+│   │   ├── skill_analyser.py  # SkillAnalyser — failure & success pattern extraction
+│   │   ├── flow_distiller.py  # FlowDistiller — N-gram workflow clustering
+│   │   ├── skill_mutator.py   # SkillMutator — agent-driven Skill generation
+│   │   └── evolution.py       # EvolutionLoop — orchestrates the full evolution cycle
 │   ├── linear/            # Linear GraphQL client and models
 │   ├── orchestrator/      # Scheduler, reconciler, retry, CI watcher, concurrency
 │   ├── tui/               # Terminal workbench (rich + questionary)
@@ -187,6 +201,14 @@ github:
 
 **Switching backends:** Change `backend` to `cursor` or `claude_code`. Each backend reads its own config section. The `after_create` hook auto-generates both `.cursor/` and `.claude/` configurations from a single source — no backend-specific hook overrides needed.
 
+**Skill evolution:** Enable the optional `evolution` block (see [Skill Evolution](#skill-evolution) for full details):
+
+```yaml
+evolution:
+  enabled: true        # disabled by default
+  auto_apply: false    # new Skills land in pending_skills/ for review before applying
+```
+
 **Switching projects:** Change `GITHUB_OWNER`, `GITHUB_REPO`, and `GITHUB_TOKEN` in `.env`. All Skills, hooks, and CI monitoring automatically use these values — no hardcoded repo references in WORKFLOW.md.
 
 ## Makefile Targets
@@ -250,6 +272,75 @@ The TUI provides an **E2E Test** action for issues in Human Review:
 - **Pass**: converts the draft PR to ready for review, marks the issue as Done, and adds a success comment on Linear
 - **Fail**: records the failure reason, adds a comment to Linear, and moves the issue back to In Progress for the agent to automatically fix
 
+## Skill Evolution
+
+Maestro includes an opt-in system that automatically improves existing Skills and crystallises recurring agent workflows into new Skills — all driven by the same agent backend already configured in `WORKFLOW.md` (no extra API key required).
+
+### How It Works
+
+**Data collection** (runs with every issue, zero configuration needed):
+
+- `RunRecord v2` — every turn records the ordered tool-call chain, files changed, Skills referenced, and Linear labels alongside the existing success/error fields.
+- `FlowRecord` — after each issue run completes, the full tool-call sequence is appended to `.maestro/flow_history.jsonl`.
+
+**Evolution cycle** (triggered from `Scheduler._on_tick` when no agents are running):
+
+| Step | Component | What It Does |
+|------|-----------|--------------|
+| A | `SkillAnalyser` | Groups history by `skill_refs`; finds recurring failure errors and common success tool sequences not yet covered by the Skill's learned section |
+| B | `SkillMutator` | Writes context files to an *evolution workspace*, runs a meta-prompt through the configured Runner (Cursor or Claude Code), reads the output |
+| C | `SkillStore` | Appends the generated addendum below the `<!-- LEARNED -->` sentinel in the target SKILL.md |
+| D | `FlowDistiller` | N-gram clusters `flow_history.jsonl` to find tool sub-sequences that appear ≥ N times across successful runs |
+| E | `SkillMutator` | Same evolution-workspace flow as above, but generates a complete new SKILL.md |
+| F | `SkillStore` | Writes the new Skill to `evolved_skills/` (or `pending_skills/` if `auto_apply: false`) |
+
+Evolved Skills are synced into every agent workspace via the `before_run` hook.
+
+### Configuration
+
+Add (or uncomment) the `evolution` block in `WORKFLOW.md`:
+
+```yaml
+evolution:
+  enabled: true
+  min_runs_between: 10         # wait until N successful runs have occurred since last cycle
+  min_interval_minutes: 60     # also wait at least this many minutes
+  max_addendum_tokens: 500     # soft cap on addendum length (guideline to the agent)
+  max_new_skills_per_cycle: 2  # max new Skills created per cycle
+  min_pattern_occurrences: 3   # a flow pattern must appear this many times to qualify
+  auto_apply: false            # false → new Skills land in pending_skills/ for human review
+```
+
+Evolution is **disabled by default** (`enabled: false`). No separate LLM API key is required — the mutator reuses the same Cursor or Claude Code runner already configured in WORKFLOW.md.
+
+### Safety
+
+| Mechanism | Implementation |
+|-----------|---------------|
+| Original body never touched | Addenda are written only after the `<!-- LEARNED -->` sentinel |
+| Opt-out per Skill | Add `<!-- NO_AUTO_MUTATE -->` anywhere in a SKILL.md to exclude it |
+| Human review mode | `auto_apply: false` puts new Skills in `pending_skills/` for manual promotion |
+| Rollback | Every mutation creates a `.bak` backup before writing |
+| Frequency limit | Max 3 addenda + 2 new Skills per cycle |
+| No executable code | Meta-prompts explicitly prohibit shell scripts or runnable code blocks |
+| Audit log | Every cycle appends to `.maestro/evolution_log.jsonl` |
+
+### Data Layout
+
+```text
+{workspace_root}/.maestro/
+├── run_history.jsonl       # RunRecord v2 — per-turn execution history
+├── flow_history.jsonl      # FlowRecord — full tool-call chains
+├── evolution_log.jsonl     # Audit log of every evolution cycle
+├── evolved_skills/         # Applied evolved Skills (synced to workspaces on before_run)
+│   └── <name>/SKILL.md
+├── pending_skills/         # Candidate Skills awaiting human review
+│   └── <name>/SKILL.md
+└── evolution_workspace/    # Temporary workspace used by SkillMutator (wiped per run)
+```
+
+---
+
 ## Philosophy
 
 The value of an AI coding agent does not come only from the model.
@@ -280,7 +371,20 @@ Maestro supports pluggable agent execution backends, switchable via `backend` in
 
 ## Status
 
-**v0.6.0** — Unified configuration: one set of Skills, Rules, and MCP configs shared by all backends.
+**v0.7.0** — Skill self-evolution system + Cursor auth token auto-refresh.
+
+**Changelog (v0.7.0):**
+- **Skill self-evolution** — new `src/maestro/learning/` subsystem:
+  - `RunRecord v2` — extended with `tool_sequence`, `files_changed`, `skill_refs`, `labels` fields (backward-compatible)
+  - `FlowRecorder` — captures the full ordered tool-call chain per issue run to `flow_history.jsonl`
+  - `SkillStore` — manages `evolved_skills/` and `pending_skills/` directories with `<!-- LEARNED -->` sentinel patching and `.bak` rollback
+  - `SkillAnalyser` — extracts recurring failure patterns and common success tool N-grams from `run_history.jsonl`
+  - `FlowDistiller` — N-gram clustering of `flow_history.jsonl` to discover new-Skill candidates; prunes redundant sub-patterns
+  - `SkillMutator` — uses the *evolution workspace* pattern to drive the already-configured Runner (Cursor or Claude Code) via meta-prompts; writes output to files in `output/`, reads result back — no extra API key required
+  - `EvolutionLoop` — triggered from `Scheduler._on_tick` only when no agents are running; respects `min_runs_between` and `min_interval_minutes` thresholds; logs every mutation to `evolution_log.jsonl`
+  - `EvolutionConfig` — new `evolution:` section in `WORKFLOW.md` with `enabled`, `auto_apply`, cycle limits, and occurrence thresholds
+  - `before_run` hook — syncs `evolved_skills/` into `.cursor/skills/` before every agent run
+- **Cursor auth token auto-refresh** — `HeadlessRunner` now detects expired-token errors ("authentication is invalid", "please log in") and automatically re-exchanges `CURSOR_API_KEY` for a fresh token before retrying the turn; eliminates the need for container restarts due to stale cached tokens
 
 **Changelog (v0.6.0):**
 - **Unified Skills & Rules** — single set of `.cursor/skills/` and `.cursor/rules/` used by both Cursor ACP and Claude Code; `after_create` hook auto-generates `CLAUDE.md` (aggregated rules) and `.claude/mcp.json` (mirrored MCP config)

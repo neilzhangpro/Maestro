@@ -17,6 +17,7 @@ from typing import Callable
 
 from maestro.agent.events import AgentEvent
 from maestro.agent.headless import HeadlessRunner
+from maestro.learning.flow_recorder import FlowRecord, FlowRecorder, FlowStep
 from maestro.learning.recorder import RunRecord, RunRecorder
 from maestro.linear.client import LinearClient
 from maestro.linear.models import Issue
@@ -65,7 +66,12 @@ class Worker:
             self._runner = ClaudeCodeRunner(config.claude_code)
         else:
             self._runner = HeadlessRunner(config.cursor)
-        self._recorder = RunRecorder(config.workspace.root / ".maestro")
+        _store = config.workspace.root / ".maestro"
+        self._recorder = RunRecorder(_store)
+        self._flow_recorder = FlowRecorder(_store)
+        # Accumulated tool-call steps for the current run (reset each run)
+        self._flow_steps: list[FlowStep] = []
+        self._flow_seq: int = 0
 
     def cancel(self) -> None:
         """Request cancellation — kills the agent subprocess and stops the run loop."""
@@ -78,6 +84,11 @@ class Worker:
         issue_id = self.issue.id
         identifier = self.issue.identifier
 
+        # Reset per-run flow tracking state
+        self._flow_steps = []
+        self._flow_seq = 0
+
+        exit_reason = "abnormal"
         try:
             workspace = self._workspace_mgr.prepare_workspace(identifier)
             self._workspace_mgr.run_before(workspace)
@@ -85,11 +96,14 @@ class Worker:
             session_id: str | None = None
             current_issue = self.issue
             max_turns = self.config.agent.max_turns
+            last_turn = 0
 
             for turn in range(1, max_turns + 1):
+                last_turn = turn
                 if self._cancel_event.is_set():
                     log.info("Worker %s: cancelled before turn %d.", identifier, turn)
                     self._run_after_hook(workspace.path)
+                    self._record_flow(identifier, session_id, turn, success=False)
                     self._on_exit(issue_id, "abnormal", "cancelled_by_user")
                     return
 
@@ -101,10 +115,44 @@ class Worker:
                 prompt = self._build_prompt(current_issue, self.attempt, turn, max_turns)
 
                 turn_tools: list[str] = []
+                turn_seq: list[dict] = []
+                files_changed: list[str] = []
+                skill_refs: list[str] = []
 
-                def _on_event_wrapper(e: AgentEvent, iid: str = issue_id) -> None:
+                current_turn = turn  # capture for closure
+
+                def _on_event_wrapper(
+                    e: AgentEvent,
+                    iid: str = issue_id,
+                    _turn: int = current_turn,
+                ) -> None:
                     if e.tool_name:
                         turn_tools.append(e.tool_name)
+                        step = FlowStep(
+                            turn=_turn,
+                            seq=self._flow_seq,
+                            tool_name=e.tool_name,
+                            tool_path=e.tool_path,
+                            duration_ms=e.duration_ms,
+                            event_type=e.event,
+                        )
+                        self._flow_steps.append(step)
+                        self._flow_seq += 1
+                        turn_seq.append({
+                            "tool": e.tool_name,
+                            "path": e.tool_path,
+                            "ms": e.duration_ms,
+                        })
+                        # Track written files
+                        if e.tool_path and e.event in ("tool_start",) and e.tool_name in (
+                            "writeToolCall", "Write", "EditToolCall", "Edit", "MultiEdit",
+                        ):
+                            files_changed.append(e.tool_path)
+                        # Track SKILL.md references
+                        if e.tool_path and "SKILL.md" in e.tool_path:
+                            skill_name = _extract_skill_name(e.tool_path)
+                            if skill_name and skill_name not in skill_refs:
+                                skill_refs.append(skill_name)
                     self._on_event(iid, e)
 
                 if self.config.backend == "claude_code" and self.config.claude_code:
@@ -123,6 +171,10 @@ class Worker:
 
                 self._record_turn(
                     identifier, turn, result, turn_tools,
+                    tool_sequence=turn_seq,
+                    files_changed=files_changed,
+                    skill_refs=skill_refs,
+                    labels=current_issue.labels,
                 )
 
                 if not session_id:
@@ -134,6 +186,7 @@ class Worker:
                         identifier, turn, result.error,
                     )
                     self._run_after_hook(workspace.path)
+                    self._record_flow(identifier, session_id, turn, success=False)
                     self._on_exit(issue_id, "abnormal", result.error)
                     return
 
@@ -148,6 +201,7 @@ class Worker:
                 refreshed = self._refresh_issue_state(issue_id)
                 if refreshed is None:
                     self._run_after_hook(workspace.path)
+                    self._record_flow(identifier, session_id, turn, success=False)
                     self._on_exit(issue_id, "abnormal", "issue_state_refresh_failed")
                     return
 
@@ -161,6 +215,7 @@ class Worker:
                     break
 
             self._run_after_hook(workspace.path)
+            self._record_flow(identifier, session_id, last_turn, success=True)
             self._on_exit(issue_id, "normal", None)
 
         except Exception as exc:
@@ -204,10 +259,14 @@ class Worker:
         turn: int,
         result: "TurnResult",
         turn_tools: list[str],
+        *,
+        tool_sequence: list[dict] | None = None,
+        files_changed: list[str] | None = None,
+        skill_refs: list[str] | None = None,
+        labels: list[str] | None = None,
     ) -> None:
         """Persist one turn's outcome to the shared execution history."""
         try:
-            from maestro.agent.headless import TurnResult as _TR  # noqa: F401
             self._recorder.record(RunRecord(
                 issue_identifier=identifier,
                 timestamp_utc=datetime.now(timezone.utc).isoformat(),
@@ -218,9 +277,35 @@ class Worker:
                 duration_ms=result.duration_ms,
                 tools_used=sorted(set(turn_tools)),
                 output_summary=(result.output_text or "")[:300],
+                tool_sequence=tool_sequence or [],
+                files_changed=sorted(set(files_changed or [])),
+                skill_refs=skill_refs or [],
+                labels=labels or [],
             ))
         except Exception:
             log.warning("Failed to record turn %d for %s", turn, identifier, exc_info=True)
+
+    def _record_flow(
+        self,
+        identifier: str,
+        session_id: str | None,
+        total_turns: int,
+        *,
+        success: bool,
+    ) -> None:
+        """Persist the full tool-call chain for this run as a FlowRecord."""
+        try:
+            self._flow_recorder.record(FlowRecord(
+                issue_identifier=identifier,
+                session_id=session_id or "",
+                timestamp_utc=datetime.now(timezone.utc).isoformat(),
+                total_turns=total_turns,
+                success=success,
+                labels=self.issue.labels,
+                steps=list(self._flow_steps),
+            ))
+        except Exception:
+            log.warning("Failed to record flow for %s", identifier, exc_info=True)
 
     def _refresh_issue_state(self, issue_id: str) -> Issue | None:
         try:
@@ -253,6 +338,21 @@ class Worker:
             self._workspace_mgr.run_after(ws)
         except Exception:
             log.warning("after_run hook failed", exc_info=True)
+
+
+def _extract_skill_name(tool_path: str) -> str | None:
+    """Return the skill directory name from a path containing SKILL.md.
+
+    E.g. ``.cursor/skills/git-branch-sync/SKILL.md`` → ``git-branch-sync``.
+    """
+    parts = tool_path.replace("\\", "/").split("/")
+    try:
+        idx = next(i for i, p in enumerate(parts) if p == "SKILL.md")
+        if idx > 0:
+            return parts[idx - 1]
+    except StopIteration:
+        pass
+    return None
 
 
 def _to_linear_config(t: TrackerConfig):

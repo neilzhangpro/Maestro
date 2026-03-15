@@ -199,6 +199,33 @@ class ServerConfig:
     port: int | None = None
 
 
+@dataclass(frozen=True)
+class EvolutionConfig:
+    """Configuration for the Skill self-evolution subsystem."""
+
+    enabled: bool = False
+    """Whether the evolution loop runs at all."""
+
+    min_runs_between: int = 10
+    """Minimum number of successful runs between two evolution cycles."""
+
+    min_interval_minutes: int = 60
+    """Minimum wall-clock minutes between two evolution cycles."""
+
+    max_addendum_tokens: int = 500
+    """Soft cap on addendum length (passed as a guideline to the LLM)."""
+
+    max_new_skills_per_cycle: int = 2
+    """Maximum new Skills created per evolution cycle."""
+
+    min_pattern_occurrences: int = 3
+    """Minimum times a flow pattern must appear before becoming a Skill candidate."""
+
+    auto_apply: bool = False
+    """When False, new Skills land in ``pending_skills/`` for human review.
+    When True, they are written directly to ``evolved_skills/``."""
+
+
 _SUPPORTED_BACKENDS = {"cursor", "claude_code"}
 
 
@@ -216,6 +243,7 @@ class ServiceConfig:
     workflow_path: Path
     backend: str = "cursor"
     claude_code: ClaudeCodeConfig | None = None
+    evolution: EvolutionConfig = field(default_factory=EvolutionConfig)  # type: ignore[assignment]
 
     @classmethod
     def from_workflow(cls, wd: WorkflowDefinition) -> "ServiceConfig":
@@ -240,6 +268,7 @@ class ServiceConfig:
             agent=_parse_agent(raw.get("agent") or {}),
             server=_parse_server(raw.get("server") or {}),
             github=_parse_github(raw.get("github") or {}),
+            evolution=_parse_evolution(raw.get("evolution") or {}),
             prompt_template=wd.prompt_template,
             workflow_path=wd.source_path,
             backend=backend,
@@ -413,6 +442,28 @@ def _parse_claude_code(raw: dict[str, Any]) -> ClaudeCodeConfig:
             raw.get("stall_timeout_ms"), "claude_code.stall_timeout_ms",
             default=300_000,
         ),
+    )
+
+
+def _parse_evolution(raw: dict[str, Any]) -> EvolutionConfig:
+    return EvolutionConfig(
+        enabled=_bool(raw.get("enabled"), "evolution.enabled", default=False),
+        min_runs_between=_int(
+            raw.get("min_runs_between"), "evolution.min_runs_between", default=10,
+        ),
+        min_interval_minutes=_int(
+            raw.get("min_interval_minutes"), "evolution.min_interval_minutes", default=60,
+        ),
+        max_addendum_tokens=_int(
+            raw.get("max_addendum_tokens"), "evolution.max_addendum_tokens", default=500,
+        ),
+        max_new_skills_per_cycle=_int(
+            raw.get("max_new_skills_per_cycle"), "evolution.max_new_skills_per_cycle", default=2,
+        ),
+        min_pattern_occurrences=_int(
+            raw.get("min_pattern_occurrences"), "evolution.min_pattern_occurrences", default=3,
+        ),
+        auto_apply=_bool(raw.get("auto_apply"), "evolution.auto_apply", default=False),
     )
 
 

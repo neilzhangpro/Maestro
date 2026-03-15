@@ -57,6 +57,46 @@ class HeadlessRunner:
         model_override: str | None = None,
         cancel_event: threading.Event | None = None,
     ) -> TurnResult:
+        result = self._run_turn_once(
+            workspace=workspace,
+            prompt=prompt,
+            resume_session_id=resume_session_id,
+            on_event=on_event,
+            model_override=model_override,
+            cancel_event=cancel_event,
+        )
+
+        # If the cached auth token was rejected, discard it, fetch a fresh one,
+        # and retry the turn exactly once.
+        if not result.success and self._is_auth_error(result.error):
+            api_key = self.config.api_key or os.environ.get("CURSOR_API_KEY")
+            if api_key:
+                log.warning(
+                    "Auth token rejected — invalidating cache and retrying with a fresh token."
+                )
+                self._exchange_api_key(api_key, force=True)
+                result = self._run_turn_once(
+                    workspace=workspace,
+                    prompt=prompt,
+                    resume_session_id=resume_session_id,
+                    on_event=on_event,
+                    model_override=model_override,
+                    cancel_event=cancel_event,
+                )
+
+        return result
+
+    def _run_turn_once(
+        self,
+        *,
+        workspace: Path,
+        prompt: str,
+        resume_session_id: str | None = None,
+        on_event: Callable[[AgentEvent], None] | None = None,
+        model_override: str | None = None,
+        cancel_event: threading.Event | None = None,
+    ) -> TurnResult:
+        """Execute one subprocess turn (no retry logic)."""
         cmd = self._build_command(workspace, prompt, resume_session_id, model_override)
         env = self._build_env()
 
@@ -80,6 +120,13 @@ class HeadlessRunner:
         finally:
             with self._process_lock:
                 self._process = None
+
+    def _is_auth_error(self, error: str | None) -> bool:
+        """Return True when *error* looks like a Cursor authentication failure."""
+        if not error:
+            return False
+        lower = error.lower()
+        return any(kw in lower for kw in self._AUTH_ERROR_KEYWORDS)
 
     def kill_current_process(self) -> None:
         """Kill the currently running agent subprocess (if any)."""
@@ -139,7 +186,16 @@ class HeadlessRunner:
         raise FileNotFoundError(f"Could not find executable: {cmd}")
 
     def _build_env(self) -> dict[str, str]:
-        """Set CURSOR_AUTH_TOKEN and remove CURSOR_API_KEY to bypass macOS Keychain entirely."""
+        """Build the subprocess environment.
+
+        Preference order:
+        1. ``CURSOR_AUTH_TOKEN`` already in the environment — use as-is.
+        2. ``CURSOR_API_KEY`` available — exchange for an access token (cached).
+        3. Neither — pass the environment unchanged and let the CLI handle auth.
+
+        ``CURSOR_API_KEY`` is always removed from the subprocess env once we have
+        a token so we bypass macOS Keychain prompts entirely.
+        """
         env = os.environ.copy()
 
         if env.get("CURSOR_AUTH_TOKEN"):
@@ -158,12 +214,30 @@ class HeadlessRunner:
     _token_cache: str | None = None
     _token_lock = threading.Lock()
 
+    # Keywords that signal the cached token has expired / been rejected
+    _AUTH_ERROR_KEYWORDS = (
+        "authentication is invalid",
+        "please log in",
+        "agent login",
+        "unauthenticated",
+        "unauthorized",
+    )
+
     @classmethod
-    def _exchange_api_key(cls, api_key: str) -> str | None:
-        """Exchange CURSOR_API_KEY for a short-lived access token (cached)."""
+    def _exchange_api_key(cls, api_key: str, *, force: bool = False) -> str | None:
+        """Exchange CURSOR_API_KEY for a short-lived access token (cached).
+
+        Parameters
+        ----------
+        force:
+            When True the cached token is discarded and a fresh one is fetched.
+            Use this after an auth error to recover from an expired token.
+        """
         with cls._token_lock:
-            if cls._token_cache:
+            if cls._token_cache and not force:
                 return cls._token_cache
+            # Clear stale cache before fetching fresh token
+            cls._token_cache = None
             try:
                 resp = httpx.post(
                     "https://api2.cursor.sh/auth/exchange_user_api_key",
@@ -178,11 +252,17 @@ class HeadlessRunner:
                 token = resp.json().get("accessToken")
                 if token:
                     cls._token_cache = token
-                    log.debug("Obtained CURSOR_AUTH_TOKEN via token exchange.")
+                    log.debug("Obtained CURSOR_AUTH_TOKEN via token exchange (force=%s).", force)
                     return token
             except Exception:
                 log.warning("Token exchange failed; falling back to CURSOR_API_KEY.", exc_info=True)
             return None
+
+    @classmethod
+    def _invalidate_token_cache(cls) -> None:
+        """Discard the cached auth token so the next call re-exchanges the API key."""
+        with cls._token_lock:
+            cls._token_cache = None
 
     # ------------------------------------------------------------------
     # NDJSON stream processing

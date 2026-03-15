@@ -1058,6 +1058,16 @@ hooks:
       git fetch origin main --quiet 2>/dev/null || true
       git rebase origin/main --quiet 2>/dev/null || echo "[workspace-sync] Rebase skipped (not on a branch yet)"
     fi
+    # Sync evolved Skills into the workspace's .cursor/skills directory
+    if [ -n "$MAESTRO_WORKSPACE_ROOT" ] && [ -d "$MAESTRO_WORKSPACE_ROOT/.maestro/evolved_skills" ]; then
+      echo "[skill-sync] Syncing evolved skills..."
+      for skill_dir in "$MAESTRO_WORKSPACE_ROOT/.maestro/evolved_skills"/*/; do
+        skill_name=$(basename "$skill_dir")
+        target=".cursor/skills/$skill_name"
+        mkdir -p "$target"
+        cp -f "$skill_dir/SKILL.md" "$target/SKILL.md" 2>/dev/null || true
+      done
+    fi
   after_run: |
     python3 - << 'SANDBOX_EOF'
     import subprocess, sys, pathlib, os, datetime, json
@@ -1203,6 +1213,15 @@ github:
 
 server:
   port: 8080
+
+evolution:
+  enabled: false
+  min_runs_between: 10        # trigger after this many successful runs since last cycle
+  min_interval_minutes: 60    # minimum wall-clock minutes between cycles
+  max_addendum_tokens: 500    # soft cap on addendum length (passed as guidance to the agent)
+  max_new_skills_per_cycle: 2 # maximum new Skills created per cycle
+  min_pattern_occurrences: 3  # a flow pattern must appear this many times to become a Skill
+  auto_apply: false           # false → new Skills land in pending_skills/ for review; true → apply directly
 ---
 
 You are working on issue **{{ issue.identifier }}: {{ issue.title }}**.

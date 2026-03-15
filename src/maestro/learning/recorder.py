@@ -21,7 +21,12 @@ _HISTORY_FILE = "run_history.jsonl"
 
 @dataclass(frozen=True)
 class RunRecord:
-    """One turn's outcome — serialised as a single JSON line."""
+    """One turn's outcome — serialised as a single JSON line.
+
+    Fields added in v2 (tool_sequence, files_changed, skill_refs, labels) are
+    optional with empty-list defaults so that records written by older versions
+    can still be loaded without error.
+    """
 
     issue_identifier: str
     timestamp_utc: str
@@ -32,6 +37,19 @@ class RunRecord:
     duration_ms: int
     tools_used: list[str] = field(default_factory=list)
     output_summary: str = ""
+
+    # v2 fields — richer telemetry for Skill evolution analysis
+    tool_sequence: list[dict] = field(default_factory=list)
+    """Ordered tool-call chain: [{"tool": "readToolCall", "path": "...", "ms": 0}, ...]"""
+
+    files_changed: list[str] = field(default_factory=list)
+    """Paths of files written/edited during this turn (from write/edit events)."""
+
+    skill_refs: list[str] = field(default_factory=list)
+    """Names of SKILL.md files the agent read during this turn."""
+
+    labels: list[str] = field(default_factory=list)
+    """Linear labels on the issue (for clustering analysis)."""
 
 
 class RunRecorder:
@@ -53,10 +71,15 @@ class RunRecorder:
                 fcntl.flock(fh, fcntl.LOCK_UN)
 
     def load_recent(self, limit: int = 50) -> list[RunRecord]:
-        """Read the last *limit* records from the history file."""
+        """Read the last *limit* records from the history file.
+
+        Old records missing v2 fields are accepted; the dataclass defaults fill
+        in empty lists so callers can treat all records uniformly.
+        """
         if not self._history_path.exists():
             return []
         records: list[RunRecord] = []
+        _v2_fields = {"tool_sequence", "files_changed", "skill_refs", "labels"}
         try:
             with open(self._history_path, encoding="utf-8") as fh:
                 for raw_line in fh:
@@ -65,6 +88,9 @@ class RunRecorder:
                         continue
                     try:
                         data = json.loads(raw_line)
+                        # Back-fill missing v2 fields with their defaults
+                        for f in _v2_fields:
+                            data.setdefault(f, [])
                         records.append(RunRecord(**data))
                     except (json.JSONDecodeError, TypeError):
                         log.debug("Skipping malformed history line: %s", raw_line[:80])
