@@ -61,9 +61,15 @@ class SkillPatch:
     failure_patterns: list[FailurePattern] = field(default_factory=list)
     success_patterns: list[SuccessPattern] = field(default_factory=list)
 
-    # Raw records for richer LLM context
+    # Raw records split by outcome — used for Cross-Rollout Critique
+    success_records: list[RunRecord] = field(default_factory=list)
+    """Up to 5 successful RunRecords referencing this Skill (with full tool_sequence)."""
+
+    failure_records: list[RunRecord] = field(default_factory=list)
+    """Up to 5 failing RunRecords referencing this Skill."""
+
     recent_records: list[RunRecord] = field(default_factory=list)
-    """Last few records that reference this Skill (both success and failure)."""
+    """Last few records (both outcomes) for broader context."""
 
     current_learned_section: str = ""
     """Existing learned content so the mutator can avoid duplication."""
@@ -137,6 +143,8 @@ class SkillAnalyser:
                 skill_name=skill_name,
                 failure_patterns=failure_patterns,
                 success_patterns=success_patterns,
+                success_records=successes[-5:],
+                failure_records=failures[-5:],
                 recent_records=skill_records[-10:],
                 current_learned_section=learned,
             ))
