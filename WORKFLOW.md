@@ -1204,7 +1204,7 @@ agent:
 github:
   token: $GITHUB_TOKEN
   owner: Novamind-Labs-Ltd
-  repo: novie
+  repo: $GITHUB_REPO
   ci_watch_states: [In Review]
   ci_poll_interval_ms: 60000
   ci_max_wait_ms: 1800000
@@ -1248,10 +1248,20 @@ You are working on issue **{{ issue.identifier }}: {{ issue.title }}**.
 5. Ensure all existing tests still pass.
 6. Check `sandbox-test-results.txt` if it exists — it contains results from the automated sandbox test runner that ran after the previous turn. If it shows `FAILED`, fix the reported errors before proceeding.
 7. If `SANDBOX_TEST_FAILED` file exists in the workspace root, tests have not yet passed — do not move to Human Review until it is gone.
-8. **Create PR** — Read and follow `.cursor/skills/pr-create-describe/SKILL.md` to rebase onto latest `origin/main`, resolve any conflicts, and create a Pull Request.
+8. **Create PR** — Read and follow `.cursor/skills/pr-create-describe/SKILL.md` to rebase onto latest `origin/main`, resolve any conflicts, and create a **Draft** Pull Request.
 9. **Monitor CI** — Read and follow `.cursor/skills/ci-monitor-fix/SKILL.md` to monitor CI/CD pipeline status, fix failures, and re-push until all checks pass.
 10. **Update Linear** — Read and follow `.cursor/skills/linear-update-on-pr/SKILL.md` to move the issue to **In Review** after CI passes.
-    - Maestro's CI Watcher will automatically verify the result and move the issue to **Done** when confirmed, or back to **In Progress** if a regression is detected.
+    - Maestro's CI Watcher will automatically verify the result and move the issue to **Human Review** when CI is confirmed green, or back to **In Progress** if CI fails.
+    - A human will then perform E2E testing and merge the PR. **You must NOT do this yourself.**
+
+## Strictly Forbidden Actions
+You MUST NOT perform any of the following — these are controlled by Maestro's automated pipeline and human reviewers:
+- **Do NOT merge any Pull Request** (no merge, squash-merge, or rebase-merge).
+- **Do NOT mark a Draft PR as "Ready for Review"** — the CI Watcher and E2E test gate handle this.
+- **Do NOT request reviewers** on any PR.
+- **Do NOT rename PR titles** after creation.
+- **Do NOT enable auto-merge** on any PR.
+If CI requires a non-draft PR to trigger, configure the GitHub Actions workflow to run on `pull_request` with types including `opened, synchronize, reopened` — do NOT work around it by converting the draft.
 
 ## Decision Policy
 - If you encounter a problem that requires human judgment (e.g., architectural decisions, ambiguous requirements, security-sensitive changes), **stop working and update the issue state to Human Review** with a comment explaining what decision is needed.
