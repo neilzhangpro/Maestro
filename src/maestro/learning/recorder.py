@@ -51,6 +51,9 @@ class RunRecord:
     labels: list[str] = field(default_factory=list)
     """Linear labels on the issue (for clustering analysis)."""
 
+    session_id: str = ""
+    """Agent session ID — links turn-level RunRecords to the corresponding FlowRecord."""
+
 
 class RunRecorder:
     """Append-only JSONL store under ``{store_dir}/run_history.jsonl``."""
@@ -79,7 +82,7 @@ class RunRecorder:
         if not self._history_path.exists():
             return []
         records: list[RunRecord] = []
-        _v2_fields = {"tool_sequence", "files_changed", "skill_refs", "labels"}
+        _v2_fields = {"tool_sequence", "files_changed", "skill_refs", "labels", "session_id"}
         try:
             with open(self._history_path, encoding="utf-8") as fh:
                 for raw_line in fh:
@@ -90,7 +93,10 @@ class RunRecorder:
                         data = json.loads(raw_line)
                         # Back-fill missing v2 fields with their defaults
                         for f in _v2_fields:
-                            data.setdefault(f, [])
+                            if f == "session_id":
+                                data.setdefault(f, "")
+                            else:
+                                data.setdefault(f, [])
                         records.append(RunRecord(**data))
                     except (json.JSONDecodeError, TypeError):
                         log.debug("Skipping malformed history line: %s", raw_line[:80])

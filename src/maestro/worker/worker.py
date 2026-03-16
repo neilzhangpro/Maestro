@@ -116,7 +116,7 @@ class Worker:
 
                 turn_tools: list[str] = []
                 turn_seq: list[dict] = []
-                files_changed: list[str] = []
+                files_changed_set: set[str] = set()
                 skill_refs: list[str] = []
 
                 current_turn = turn  # capture for closure
@@ -138,17 +138,27 @@ class Worker:
                         )
                         self._flow_steps.append(step)
                         self._flow_seq += 1
+                        # Include event type so trajectories distinguish
+                        # initiated vs. completed tool calls
                         turn_seq.append({
                             "tool": e.tool_name,
                             "path": e.tool_path,
                             "ms": e.duration_ms,
+                            "event": e.event,
                         })
-                        # Track written files
-                        if e.tool_path and e.event in ("tool_start",) and e.tool_name in (
-                            "writeToolCall", "Write", "EditToolCall", "Edit", "MultiEdit",
+                        # Track confirmed writes (tool_end = write completed)
+                        _write_tools = {
+                            "writeToolCall", "Write",
+                            "EditToolCall", "Edit", "MultiEdit",
+                            "StrReplace",
+                        }
+                        if (
+                            e.tool_path
+                            and e.event in ("tool_end", "tool_start")
+                            and e.tool_name in _write_tools
                         ):
-                            files_changed.append(e.tool_path)
-                        # Track SKILL.md references
+                            files_changed_set.add(e.tool_path)
+                        # Track SKILL.md references (any event touching the file)
                         if e.tool_path and "SKILL.md" in e.tool_path:
                             skill_name = _extract_skill_name(e.tool_path)
                             if skill_name and skill_name not in skill_refs:
@@ -171,8 +181,9 @@ class Worker:
 
                 self._record_turn(
                     identifier, turn, result, turn_tools,
+                    session_id=session_id or result.session_id or "",
                     tool_sequence=turn_seq,
-                    files_changed=files_changed,
+                    files_changed=sorted(files_changed_set),
                     skill_refs=skill_refs,
                     labels=current_issue.labels,
                 )
@@ -260,6 +271,7 @@ class Worker:
         result: "TurnResult",
         turn_tools: list[str],
         *,
+        session_id: str = "",
         tool_sequence: list[dict] | None = None,
         files_changed: list[str] | None = None,
         skill_refs: list[str] | None = None,
@@ -277,8 +289,9 @@ class Worker:
                 duration_ms=result.duration_ms,
                 tools_used=sorted(set(turn_tools)),
                 output_summary=(result.output_text or "")[:300],
+                session_id=session_id,
                 tool_sequence=tool_sequence or [],
-                files_changed=sorted(set(files_changed or [])),
+                files_changed=files_changed or [],
                 skill_refs=skill_refs or [],
                 labels=labels or [],
             ))

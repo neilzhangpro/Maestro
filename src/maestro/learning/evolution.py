@@ -5,9 +5,13 @@ the minimum time / run-count thresholds have been exceeded.
 
 Cycle steps
 -----------
-A. **Skill patching** — :class:`SkillAnalyser` identifies existing Skills with
-   unaddressed failure/success patterns; :class:`SkillMutator` generates and
-   appends addenda via the configured agent runner.
+A. **Skill Critique** — :class:`SkillAnalyser` identifies existing Skills with
+   unaddressed failure/success patterns; :class:`SkillMutator` performs a
+   Cross-Rollout Critique and produces up to three outputs:
+
+   * ``addendum.md``             → appended to the Skill's learned section
+   * ``new_experiences.json``    → new entries added to the ExperienceBank
+   * ``consolidation_ops.json``  → merge/delete ops applied to the ExperienceBank
 
 B. **Flow distillation** — :class:`FlowDistiller` discovers frequent tool-call
    sub-sequences; :class:`SkillMutator` generates new SKILL.md files for them.
@@ -28,6 +32,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from maestro.learning.experience_bank import ExperienceBank
 from maestro.learning.flow_distiller import FlowDistiller
 from maestro.learning.flow_recorder import FlowRecorder
 from maestro.learning.recorder import RunRecorder
@@ -67,6 +72,8 @@ class EvolutionLoop:
         evolved_dir = store_dir / "evolved_skills"
         pending_dir = store_dir / "pending_skills"
         self._skill_store = SkillStore(evolved_dir, pending_dir=pending_dir)
+
+        self._exp_bank = ExperienceBank(store_dir)
 
         # State tracking
         self._last_cycle_time: float = 0.0
@@ -116,35 +123,66 @@ class EvolutionLoop:
 
         runner = _create_runner(self._svc)
         evo_ws = self._store_dir / "evolution_workspace"
-        mutator = SkillMutator(runner=runner, evolution_workspace=evo_ws)
+        mutator = SkillMutator(
+            runner=runner,
+            evolution_workspace=evo_ws,
+            experience_bank=self._exp_bank,
+        )
 
-        # --- A. Skill patching ---
+        # --- A. Skill Critique (Cross-Rollout) ---
         analyser = SkillAnalyser(
             recorder=self._recorder,
             skill_store=self._skill_store,
             min_occurrences=self._cfg.min_pattern_occurrences,
         )
         patch_candidates = analyser.find_candidates()
-        patch_limit = 3  # max patches per cycle (hard-coded safety)
+        patch_limit = 3
 
         for patch in patch_candidates[:patch_limit]:
-            log.info("EvolutionLoop: generating addendum for skill %r.", patch.skill_name)
+            log.info(
+                "EvolutionLoop: running critique for skill %r.", patch.skill_name
+            )
             try:
-                addendum = mutator.generate_addendum(patch)
-                if addendum:
-                    self._skill_store.append_learned(patch.skill_name, addendum)
-                    mutations.append({
-                        "type": "addendum",
-                        "skill": patch.skill_name,
-                        "addendum_chars": len(addendum),
-                    })
+                critique = mutator.generate_critique(patch)
+                mutation_record: dict = {"type": "critique", "skill": patch.skill_name}
+
+                # Apply addendum
+                if critique.addendum:
+                    self._skill_store.append_learned(patch.skill_name, critique.addendum)
+                    mutation_record["addendum_chars"] = len(critique.addendum)
                     log.info(
                         "EvolutionLoop: addendum applied to %r (%d chars).",
-                        patch.skill_name, len(addendum),
+                        patch.skill_name, len(critique.addendum),
                     )
+
+                # Apply new Experiences
+                if critique.new_experience_ops:
+                    # Normalise field name: agent may use "action_text" to avoid
+                    # clashing with the "action" operation type field
+                    normalised_new = _normalise_exp_ops(critique.new_experience_ops)
+                    applied = self._exp_bank.apply_operations(normalised_new)
+                    mutation_record["new_experiences"] = applied
+                    log.info(
+                        "EvolutionLoop: %d new experience(s) added for %r.",
+                        applied, patch.skill_name,
+                    )
+
+                # Apply consolidation ops
+                if critique.consolidation_ops:
+                    normalised_consol = _normalise_exp_ops(critique.consolidation_ops)
+                    applied = self._exp_bank.apply_operations(normalised_consol)
+                    mutation_record["consolidation_ops"] = applied
+                    log.info(
+                        "EvolutionLoop: %d consolidation op(s) applied for %r.",
+                        applied, patch.skill_name,
+                    )
+
+                mutations.append(mutation_record)
+
             except Exception:
                 log.warning(
-                    "EvolutionLoop: addendum failed for %r", patch.skill_name, exc_info=True,
+                    "EvolutionLoop: critique failed for %r", patch.skill_name,
+                    exc_info=True,
                 )
 
         # --- B. Flow distillation ---
@@ -169,7 +207,9 @@ class EvolutionLoop:
                 if result:
                     skill_name, content = result
                     pending = not self._cfg.auto_apply
-                    path = self._skill_store.create_skill(skill_name, content, pending=pending)
+                    path = self._skill_store.create_skill(
+                        skill_name, content, pending=pending
+                    )
                     new_skill_count += 1
                     mutations.append({
                         "type": "new_skill",
@@ -192,7 +232,6 @@ class EvolutionLoop:
         elapsed_ms = int((time.monotonic() - cycle_start) * 1000)
         self._log_cycle(mutations, elapsed_ms)
 
-        # Update state
         self._last_cycle_time = time.monotonic()
         self._last_cycle_run_count = self._count_successful_runs()
 
@@ -239,7 +278,9 @@ class EvolutionLoop:
             with open(self._log_path, "a", encoding="utf-8") as fh:
                 fh.write(line)
         except OSError:
-            log.warning("EvolutionLoop: could not write evolution log.", exc_info=True)
+            log.warning(
+                "EvolutionLoop: could not write evolution log.", exc_info=True
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -253,3 +294,23 @@ def _create_runner(config: "ServiceConfig"):
         return ClaudeCodeRunner(config.claude_code)
     from maestro.agent.headless import HeadlessRunner
     return HeadlessRunner(config.cursor)
+
+
+# ---------------------------------------------------------------------------
+# Normalisation helper
+# ---------------------------------------------------------------------------
+
+def _normalise_exp_ops(ops: list[dict]) -> list[dict]:
+    """Rename ``action_text`` → ``action`` in experience operation dicts.
+
+    The meta-prompt uses ``action_text`` for the Experience ``action`` field to
+    avoid ambiguity with the operation type field (also named ``action``).  The
+    ExperienceBank expects ``action`` for both — so we fix the field name here.
+    """
+    normalised = []
+    for op in ops:
+        op = dict(op)
+        if "action_text" in op:
+            op["action"] = op.pop("action_text")
+        normalised.append(op)
+    return normalised
