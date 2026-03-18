@@ -146,18 +146,24 @@ cp .env.example .env
 #    backend: cursor       — uses Cursor ACP (requires CURSOR_API_KEY)
 #    backend: claude_code  — uses Claude Code CLI (requires ANTHROPIC_API_KEY)
 
-# 3. Build and start (agent CLIs are installed inside the container at build time)
+# 3. One-command workbench
+make workbench
+
+# Alternative manual flow:
+# 3a. Build and start services
 make up
 
-# 4. Open the TUI workbench (in a separate terminal)
-make tui
+# 3b. Open the TUI workbench in another terminal
+make tui-docker
 
-# 5. View logs
+# 3c. View logs
 make logs
 ```
 
 The Docker build automatically downloads the agent CLI (Cursor or Claude Code)
 and installs `rtk` at build time. No host-side installation required.
+
+`make workbench` prefers `tmux` when available and opens three panes: service startup, `docker compose logs -f`, and the TUI running inside the `maestro` container. On macOS without `tmux`, it falls back to opening Terminal.app tabs automatically.
 
 ## Configuration
 
@@ -234,10 +240,12 @@ This metric is derived from RTK's own JSON output and is intended as an operatio
 | Target | Description |
 |--------|-------------|
 | `make up` | Build and start all Docker services |
+| `make workbench` | One-command startup for services, logs, and TUI |
 | `make down` | Stop all services |
 | `make restart` | Rebuild and restart |
 | `make logs` | Tail all service logs |
 | `make tui` | Launch terminal workbench |
+| `make tui-docker` | Launch terminal workbench from inside the running container |
 | `make test` | Run unit tests |
 | `make clean` | Remove containers, volumes, and caches |
 

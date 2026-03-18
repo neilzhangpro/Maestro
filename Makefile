@@ -1,5 +1,5 @@
 .PHONY: up down restart logs maestro-logs sandbox-logs \
-        build dev tui install test clean help
+        build dev tui tui-docker workbench install test clean help
 
 # ── Docker Compose ──────────────────────────────────────────────────────────
 
@@ -25,6 +25,10 @@ restart:
 ## Tail logs from all services
 logs:
 	docker compose logs -f
+
+## One-command workbench: start services, logs, and TUI
+workbench:
+	./scripts/start-workbench.sh
 
 ## Tail Maestro logs only
 maestro-logs:
@@ -56,6 +60,10 @@ dev:
 tui:
 	.venv/bin/maestro tui
 
+## Launch the terminal workbench from inside the maestro container
+tui-docker:
+	./scripts/run-tui-in-container.sh
+
 ## Start opensandbox-server locally (separate terminal)
 sandbox-dev:
 	@echo "Starting local opensandbox-server on :8899 ..."
@@ -82,8 +90,7 @@ help:
 	@echo ""
 	@echo "Maestro — available targets:"
 	@echo ""
-	@grep -E '^##' Makefile | sed 's/## /  /' | paste - <(grep -E '^[a-z].*:' Makefile | sed 's/:.*//')  || \
-	 grep -E '^(## |[a-z][a-z-]*:)' Makefile | awk '/^## /{desc=$$0; next} {printf "  %-18s %s\n", $$1, desc}' | sed 's/## //'
+	@awk '/^## /{desc=$$0; sub(/^## /, "", desc); next} /^[a-z][a-z-]*:/{target=$$1; sub(/:.*/, "", target); printf "  %-18s %s\n", target, desc}' Makefile
 	@echo ""
 
 .DEFAULT_GOAL := help
