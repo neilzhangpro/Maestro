@@ -186,6 +186,13 @@ class GitHubConfig:
 
 
 @dataclass(frozen=True)
+class RtkConfig:
+    enabled: bool = False
+    mode: str = "hook"
+    binary: str = "rtk"
+
+
+@dataclass(frozen=True)
 class AgentConfig:
     auto_dispatch: bool = False
     max_concurrent_agents: int = 10
@@ -239,6 +246,7 @@ class ServiceConfig:
     agent: AgentConfig
     server: ServerConfig
     github: GitHubConfig
+    rtk: RtkConfig
     prompt_template: str
     workflow_path: Path
     backend: str = "cursor"
@@ -268,6 +276,7 @@ class ServiceConfig:
             agent=_parse_agent(raw.get("agent") or {}),
             server=_parse_server(raw.get("server") or {}),
             github=_parse_github(raw.get("github") or {}),
+            rtk=_parse_rtk(raw.get("rtk") or {}),
             evolution=_parse_evolution(raw.get("evolution") or {}),
             prompt_template=wd.prompt_template,
             workflow_path=wd.source_path,
@@ -490,6 +499,14 @@ def _parse_github(raw: dict[str, Any]) -> GitHubConfig:
         ci_fail_target_state=_str(
             raw.get("ci_fail_target_state"), "github.ci_fail_target_state", default="In Progress",
         ),
+    )
+
+
+def _parse_rtk(raw: dict[str, Any]) -> RtkConfig:
+    return RtkConfig(
+        enabled=_bool(raw.get("enabled"), "rtk.enabled", default=False),
+        mode=_str(raw.get("mode"), "rtk.mode", default="hook"),
+        binary=_str(raw.get("binary"), "rtk.binary", default="rtk"),
     )
 
 

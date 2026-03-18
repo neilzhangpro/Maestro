@@ -23,4 +23,4 @@ def init(scheduler: "Scheduler") -> None:
 def get_state() -> dict[str, Any]:
     if _scheduler is None:
         raise HTTPException(500, "Scheduler not initialized")
-    return _scheduler.state.snapshot()
+    return _scheduler.snapshot()

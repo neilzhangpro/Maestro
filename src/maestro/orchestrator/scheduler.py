@@ -10,6 +10,7 @@ from typing import Any, Callable
 
 from maestro.agent.events import AgentEvent
 from maestro.config import LinearConfig
+from maestro.learning.recorder import RunRecorder
 from maestro.learning.evolution import EvolutionLoop
 from maestro.linear.client import LinearClient
 from maestro.linear.models import Issue
@@ -55,6 +56,7 @@ class Scheduler:
         self._tick_timer: threading.Timer | None = None
         self._stop_event = threading.Event()
         self._immediate_poll = threading.Event()
+        self._run_recorder = RunRecorder(config.workspace.root / ".maestro")
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -109,8 +111,15 @@ class Scheduler:
         self._ci_watcher.close()
         self._ci_watcher = CIWatcher(config, self._linear)
         self._evolution_loop.reload_config(config)
+        self._run_recorder = RunRecorder(config.workspace.root / ".maestro")
 
         log.info("Scheduler config reloaded.")
+
+    def snapshot(self) -> dict[str, Any]:
+        """Return the runtime snapshot enriched with optional RTK metrics."""
+        snapshot = self.state.snapshot()
+        snapshot["rtk"] = self._build_rtk_snapshot()
+        return snapshot
 
     # ------------------------------------------------------------------
     # Tick loop
@@ -205,6 +214,27 @@ class Scheduler:
             created = i.created_at or ""
             return (prio, created, i.identifier)
         return sorted(issues, key=key)
+
+    def _build_rtk_snapshot(self) -> dict[str, Any]:
+        rtk_cfg = self.config.rtk
+        snapshot: dict[str, Any] = {
+            "enabled": bool(rtk_cfg.enabled),
+            "mode": rtk_cfg.mode,
+            "binary": rtk_cfg.binary,
+            "estimated_tokens_saved": 0,
+            "last_snapshot_at": None,
+        }
+        if not rtk_cfg.enabled:
+            return snapshot
+
+        records = self._run_recorder.load_recent(limit=200)
+        for rec in reversed(records):
+            if not rec.rtk_stats:
+                continue
+            snapshot["estimated_tokens_saved"] = _extract_saved_tokens(rec.rtk_stats)
+            snapshot["last_snapshot_at"] = rec.timestamp_utc
+            break
+        return snapshot
 
     def _should_dispatch(self, issue: Issue) -> bool:
         if not issue.id or not issue.identifier or not issue.title:
@@ -405,3 +435,36 @@ class Scheduler:
             terminal_states=config.tracker.terminal_states,
             timeout_s=config.tracker.timeout_s,
         ))
+
+
+def _extract_saved_tokens(payload: Any) -> int:
+    """Best-effort token-savings extraction from RTK JSON output."""
+    if isinstance(payload, bool) or payload is None:
+        return 0
+    if isinstance(payload, (int, float)):
+        return max(int(payload), 0)
+    if isinstance(payload, str):
+        try:
+            return max(int(float(payload)), 0)
+        except ValueError:
+            return 0
+    if isinstance(payload, list):
+        return max((_extract_saved_tokens(item) for item in payload), default=0)
+    if not isinstance(payload, dict):
+        return 0
+
+    for key in (
+        "estimated_tokens_saved",
+        "saved_tokens",
+        "tokens_saved",
+        "total_saved_tokens",
+        "token_savings",
+    ):
+        value = payload.get(key)
+        if isinstance(value, (int, float, str)):
+            return _extract_saved_tokens(value)
+
+    best = 0
+    for value in payload.values():
+        best = max(best, _extract_saved_tokens(value))
+    return best

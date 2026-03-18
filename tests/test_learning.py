@@ -74,6 +74,7 @@ class TestRecordAndLoadRoundTrip:
             duration_ms=42000,
             tools_used=["readToolCall", "writeToolCall"],
             output_summary="Something went wrong here",
+            rtk_stats={"saved_tokens": 1234},
         )
         recorder.record(rec)
         loaded = recorder.load_recent()
@@ -188,6 +189,7 @@ class TestMalformedLines:
             "duration_ms": 1000,
             "tools_used": [],
             "output_summary": "",
+            "rtk_stats": {"saved_tokens": 42},
         })
         history_path.write_text(f"NOT VALID JSON\n{good}\n")
 
@@ -195,3 +197,4 @@ class TestMalformedLines:
         loaded = recorder.load_recent()
         assert len(loaded) == 1
         assert loaded[0].issue_identifier == "NOV-1"
+        assert loaded[0].rtk_stats == {"saved_tokens": 42}

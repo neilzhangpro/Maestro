@@ -1047,6 +1047,24 @@ hooks:
         echo ""
       done
     } > CLAUDE.md
+    if command -v rtk >/dev/null 2>&1; then
+      mkdir -p "$HOME/.claude"
+      rtk init -g --auto-patch --hook-only >/dev/null 2>&1 || true
+      cat >> CLAUDE.md << 'RTK_EOF'
+
+## RTK Usage
+
+RTK is installed in this environment to reduce Bash output tokens.
+
+- Prefer Bash commands for high-noise workflows when possible.
+- Prefer `rtk read <file>` over raw `cat` for large files.
+- Prefer `rtk grep <pattern> <path>` over raw `grep`/`rg` when scanning broad trees.
+- Prefer `rtk ls <path>` for directory inspection.
+- Prefer `rtk pytest`, `rtk ruff check`, and `rtk git ...` for test/lint/git output.
+- Claude built-in `Read`, `Grep`, and `Glob` do not pass through RTK. Use Bash when you want RTK filtering.
+RTK_EOF
+      echo "[workspace-init] RTK hook configured for Claude Code"
+    fi
     echo "[workspace-init] Generated .claude/mcp.json and CLAUDE.md"
     if [ -n "${GITHUB_TOKEN:-}" ]; then
       echo "[workspace-init] Cloning repository..."
@@ -1213,6 +1231,11 @@ github:
 
 server:
   port: 8080
+
+rtk:
+  enabled: true
+  mode: hook
+  binary: rtk
 
 evolution:
   enabled: false

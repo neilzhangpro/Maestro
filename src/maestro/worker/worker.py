@@ -10,6 +10,9 @@ A Worker runs in its own thread, managed by the Orchestrator.  It:
 from __future__ import annotations
 
 import logging
+import json
+import shutil
+import subprocess
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -186,6 +189,7 @@ class Worker:
                     files_changed=sorted(files_changed_set),
                     skill_refs=skill_refs,
                     labels=current_issue.labels,
+                    rtk_stats=self._collect_rtk_stats(workspace.path),
                 )
 
                 if not session_id:
@@ -276,6 +280,7 @@ class Worker:
         files_changed: list[str] | None = None,
         skill_refs: list[str] | None = None,
         labels: list[str] | None = None,
+        rtk_stats: dict | None = None,
     ) -> None:
         """Persist one turn's outcome to the shared execution history."""
         try:
@@ -294,6 +299,7 @@ class Worker:
                 files_changed=files_changed or [],
                 skill_refs=skill_refs or [],
                 labels=labels or [],
+                rtk_stats=rtk_stats or {},
             ))
         except Exception:
             log.warning("Failed to record turn %d for %s", turn, identifier, exc_info=True)
@@ -351,6 +357,43 @@ class Worker:
             self._workspace_mgr.run_after(ws)
         except Exception:
             log.warning("after_run hook failed", exc_info=True)
+
+    def _collect_rtk_stats(self, workspace_path: Path) -> dict:
+        """Return an RTK gain snapshot when enabled and available."""
+        rtk_cfg = getattr(self.config, "rtk", None)
+        if not rtk_cfg or not rtk_cfg.enabled:
+            return {}
+        if self.config.backend != "claude_code":
+            return {}
+        binary = shutil.which(rtk_cfg.binary)
+        if not binary:
+            return {}
+        try:
+            result = subprocess.run(
+                [binary, "gain", "--all", "--format", "json"],
+                cwd=str(workspace_path),
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+        except Exception:
+            log.debug("Failed to collect RTK stats", exc_info=True)
+            return {}
+
+        if result.returncode != 0 or not result.stdout.strip():
+            return {}
+
+        try:
+            payload = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            log.debug("RTK gain output was not valid JSON: %r", result.stdout[:120])
+            return {}
+
+        if not isinstance(payload, dict):
+            return {}
+
+        return payload
 
 
 def _extract_skill_name(tool_path: str) -> str | None:

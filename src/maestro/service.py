@@ -76,7 +76,7 @@ class MaestroService:
     def _push_state(self) -> None:
         """Push orchestrator state change to WebSocket subscribers via RunManager."""
         if self._run_manager and self._scheduler:
-            snapshot = self._scheduler.state.snapshot()
+            snapshot = self._scheduler.snapshot()
             self._run_manager._broadcast({
                 "type": "state_update",
                 "state": snapshot,

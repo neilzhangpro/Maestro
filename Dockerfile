@@ -27,6 +27,23 @@ RUN chmod +x /tmp/install-cursor-cli.sh && \
     rm -f /tmp/install-cursor-cli.sh
 
 # ---------------------------------------------------------------
+# RTK CLI — token-optimized proxy for Bash-heavy Claude Code flows
+# ---------------------------------------------------------------
+ARG RTK_VERSION=0.28.2
+RUN set -eux; \
+    arch="$(dpkg --print-architecture)"; \
+    case "$arch" in \
+      amd64) rtk_arch="x86_64-unknown-linux-musl" ;; \
+      arm64) rtk_arch="aarch64-unknown-linux-gnu" ;; \
+      *) echo "Unsupported architecture: $arch" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL "https://github.com/rtk-ai/rtk/releases/download/v${RTK_VERSION}/rtk-${rtk_arch}.tar.gz" -o /tmp/rtk.tar.gz; \
+    tar -xzf /tmp/rtk.tar.gz -C /tmp; \
+    install -m 0755 /tmp/rtk /usr/local/bin/rtk; \
+    rm -f /tmp/rtk.tar.gz /tmp/rtk; \
+    rtk --version
+
+# ---------------------------------------------------------------
 # Claude Code CLI — installed via npm from @anthropic-ai/claude-code
 # ---------------------------------------------------------------
 RUN npm install -g @anthropic-ai/claude-code && \

@@ -54,6 +54,9 @@ class RunRecord:
     session_id: str = ""
     """Agent session ID — links turn-level RunRecords to the corresponding FlowRecord."""
 
+    rtk_stats: dict = field(default_factory=dict)
+    """Optional RTK gain snapshot captured after the turn."""
+
 
 class RunRecorder:
     """Append-only JSONL store under ``{store_dir}/run_history.jsonl``."""
@@ -82,7 +85,9 @@ class RunRecorder:
         if not self._history_path.exists():
             return []
         records: list[RunRecord] = []
-        _v2_fields = {"tool_sequence", "files_changed", "skill_refs", "labels", "session_id"}
+        _v2_fields = {
+            "tool_sequence", "files_changed", "skill_refs", "labels", "session_id", "rtk_stats",
+        }
         try:
             with open(self._history_path, encoding="utf-8") as fh:
                 for raw_line in fh:
@@ -95,6 +100,8 @@ class RunRecorder:
                         for f in _v2_fields:
                             if f == "session_id":
                                 data.setdefault(f, "")
+                            elif f == "rtk_stats":
+                                data.setdefault(f, {})
                             else:
                                 data.setdefault(f, [])
                         records.append(RunRecord(**data))
