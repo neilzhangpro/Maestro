@@ -7,8 +7,10 @@
 up:
 	docker compose up -d --build
 	@echo ""
-	@echo "  Maestro   → http://localhost:8080"
-	@echo "  OpenSandbox → http://localhost:8899"
+	@MAESTRO_PORT=$$(awk -F= '/^MAESTRO_PORT=/{print $$2}' .env 2>/dev/null | tail -n1); \
+	OPENSANDBOX_PORT=$$(awk -F= '/^OPENSANDBOX_PORT=/{print $$2}' .env 2>/dev/null | tail -n1); \
+	echo "  Maestro   → http://localhost:$${MAESTRO_PORT:-18080}"; \
+	echo "  OpenSandbox → http://localhost:$${OPENSANDBOX_PORT:-18899}"
 	@echo ""
 	@echo "  Run 'make tui' to launch terminal workbench."
 	@echo "  Run 'make logs' to tail all logs."
@@ -58,7 +60,8 @@ dev:
 
 ## Launch the terminal workbench (connect to running Maestro)
 tui:
-	.venv/bin/maestro tui
+	@MAESTRO_PORT=$$(awk -F= '/^MAESTRO_PORT=/{print $$2}' .env 2>/dev/null | tail -n1); \
+	.venv/bin/maestro tui --url "http://127.0.0.1:$${MAESTRO_PORT:-18080}"
 
 ## Launch the terminal workbench from inside the maestro container
 tui-docker:

@@ -11,7 +11,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./scripts/start-opensandbox.sh:/scripts/start-opensandbox.sh:ro
     ports:
-      - "8899:8080"   # host:8899 → container:8080 (avoids clash with maestro:8080)
+      - "${OPENSANDBOX_PORT:-18899}:8080"
     healthcheck:
       test: ["CMD", "python3", "-c",
              "import urllib.request; urllib.request.urlopen('http://localhost:8080/health', timeout=3)"]
@@ -26,19 +26,17 @@ services:
     build:
       context: .
     ports:
-      - "8080:8080"
+      - "${MAESTRO_PORT:-18080}:8080"
     env_file:
       - .env
     environment:
       # Point Maestro at the opensandbox service (overrides empty SANDBOX_DOMAIN in .env)
       - SANDBOX_DOMAIN=opensandbox:8080
+      - MAESTRO_WORKSPACE_ROOT=/data/workspaces
     volumes:
-      - workspaces:/data/workspaces
+      - ${MAESTRO_HOST_WORKSPACE_ROOT:-./workspaces}:/data/workspaces
       - ./WORKFLOW.md:/app/WORKFLOW.md:ro
     depends_on:
       opensandbox:
         condition: service_healthy
     restart: unless-stopped
-
-volumes:
-  workspaces:

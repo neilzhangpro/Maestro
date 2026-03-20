@@ -11,6 +11,7 @@ For each issue in a ``ci_watch_state`` (e.g. "In Review"):
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from maestro.github.client import GitHubClient
@@ -97,6 +98,28 @@ class CIWatcher:
             return
 
         checks = github.get_check_status(owner, repo, pr.head_sha)
+        grace_s = max(int(gh_config.ci_poll_interval_ms / 1000) * 2, 60)
+
+        if checks.total == 0:
+            created_at = pr.created_at
+            if created_at is not None:
+                elapsed_s = (datetime.now(timezone.utc) - created_at).total_seconds()
+                if elapsed_s < grace_s:
+                    log.debug(
+                        "CI watcher: %s PR #%d — waiting for checks to appear (%ds/%ds)",
+                        issue.identifier, pr.number, int(elapsed_s), grace_s,
+                    )
+                    return
+            github.merge_pull_request(owner, repo, pr.number)
+            self._transition_issue(
+                issue,
+                target_state=gh_config.ci_pass_target_state,
+                comment=(
+                    f"PR [#{pr.number}]({pr.html_url}) has no CI checks after waiting; merged automatically. "
+                    f"Moving to {gh_config.ci_pass_target_state}."
+                ),
+            )
+            return
 
         if not checks.all_done:
             log.debug(
@@ -106,12 +129,13 @@ class CIWatcher:
             return
 
         if checks.all_passed:
+            github.merge_pull_request(owner, repo, pr.number)
             self._transition_issue(
                 issue,
                 target_state=gh_config.ci_pass_target_state,
                 comment=(
                     f"All CI checks passed on PR [#{pr.number}]({pr.html_url}). "
-                    f"Moving to {gh_config.ci_pass_target_state}."
+                    f"PR merged automatically. Moving to {gh_config.ci_pass_target_state}."
                 ),
             )
         elif checks.has_failures:

@@ -25,7 +25,7 @@ from maestro.learning.recorder import RunRecord, RunRecorder
 from maestro.linear.client import LinearClient
 from maestro.linear.models import Issue
 from maestro.workflow.config import ServiceConfig, TrackerConfig
-from maestro.workflow.template import TemplateRenderError, render_prompt
+from maestro.workflow.template import TemplateRenderError, compose_agent_prompt, render_prompt
 from maestro.workspace.hooks import ShellHooks
 from maestro.workspace.manager import WorkspaceManager
 
@@ -244,16 +244,18 @@ class Worker:
 
         if turn == 1:
             try:
-                return render_prompt(
-                    self.config.prompt_template,
-                    issue=issue.to_template_dict(),
-                    attempt=attempt,
-                    learning_context=learning_context or None,
-                    backend=self.config.backend,
+                return compose_agent_prompt(
+                    render_prompt(
+                        self.config.prompt_template,
+                        issue=issue.to_template_dict(),
+                        attempt=attempt,
+                        learning_context=learning_context or None,
+                        backend=self.config.backend,
+                    )
                 )
             except TemplateRenderError:
                 log.exception("Template rendering failed — using fallback prompt.")
-                return (
+                return compose_agent_prompt(
                     f"You are working on issue {issue.identifier}: {issue.title}\n\n"
                     f"{issue.description or '(no description)'}"
                 )
@@ -266,7 +268,7 @@ class Worker:
         )
         if learning_context:
             continuation += f"\n\n## Execution History Insights\n{learning_context}"
-        return continuation
+        return compose_agent_prompt(continuation)
 
     def _record_turn(
         self,

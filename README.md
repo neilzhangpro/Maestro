@@ -54,15 +54,14 @@ Maestro is designed for that layer.
 - Execute agent sessions in a controlled multi-turn pipeline (up to 10 turns)
 - **Dual-model strategy** — plan with one model, code with another (configurable `plan_model` + `model` for both backends)
 - Run up to N concurrent agent tasks with automatic retry (max 3 retries with exponential backoff), stall detection, and 10-minute cooldown between runs
-- **Automated workspace bootstrap** — `after_create` hook clones the repo; `before_run` hook auto-rebases onto latest `origin/main` every turn
-- **Unified Skills & Rules** — one set of Skills (`.cursor/skills/`) and Rules (`.cursor/rules/`) shared by both backends; `after_create` hook auto-generates `CLAUDE.md` and `.claude/mcp.json` for Claude Code
-- **RTK token-aware Bash flows** — when using `backend: claude_code`, Maestro installs `rtk`, configures its Claude hook, and records estimated token savings from Bash-heavy workflows
+- **Automated workspace bootstrap** — `after_create` hook initializes the issue workspace, generates runtime Skills/Rules, and normalizes local git setup for new or empty repositories
+- **Unified Skills & Rules** — one set of Skills (`.cursor/skills/`) and Rules (`.cursor/rules/`) shared by both backends; these remain workspace runtime files and are not meant to ship with the project source tree
 - Configure **5 MCPs** (Linear, Playwright, GitHub, GitNexus, Greptile) in every agent workspace — mirrored to both `.cursor/mcp.json` and `.claude/mcp.json`
 - Run tests in an isolated **OpenSandbox Code Interpreter** after each turn and feed results back to the agent
-- **Draft PR workflow** — PRs are created as drafts; only converted to ready for review after human E2E testing passes
-- **CI Watcher** — monitors GitHub CI status for issues in `In Review` state; auto-transitions to `Human Review` on success or back to `In Progress` on failure for automated fix
-- **E2E Test gate** — TUI provides a `🧪 E2E Test` panel for human end-to-end testing; on pass, converts draft PR to ready and marks issue Done
-- Human-in-the-loop via `Human Review` handoff state — agent pauses, workspace preserved
+- **Human Review first** — agent work stops at `Human Review`; workspace is preserved for manual inspection and local validation before any submit/merge action
+- **Submit-review pipeline** — the TUI `🧪 E2E Test` flow commits, pushes, creates or updates the PR, and then either waits for CI or merges automatically
+- **CI Watcher** — monitors GitHub CI status for issues in configured review states; on pass, auto-merges and marks `Done`; on failure, moves back to `In Progress`
+- **Bootstrap-safe trunk setup** — empty repositories and misconfigured default branches are normalized to `main` before PR creation
 - **Docker-only deployment** — agents run inside containers, avoiding local client sprawl
 - Terminal workbench (`make tui`) with **← Back navigation** for real-time monitoring, issue management, and E2E testing
 - **Skill self-evolution** — execution history is automatically analysed to patch existing Skills and crystallise recurring workflows into new Skills (see [Skill Evolution](#skill-evolution))
@@ -206,8 +205,8 @@ github:
   token: $GITHUB_TOKEN
   owner: $GITHUB_OWNER                # set in .env — no hardcoded repo references
   repo: $GITHUB_REPO                  # set in .env — switch projects by changing .env only
-  ci_watch_states: [In Review]         # monitor CI for issues in these states
-  ci_pass_target_state: Human Review   # where to move on CI pass
+  ci_watch_states: [In Review]         # optional; if the state exists, Maestro waits here for CI
+  ci_pass_target_state: Done           # CI pass auto-merges and moves to Done
   ci_fail_target_state: In Progress    # where to move on CI fail (triggers re-fix)
 ```
 
@@ -267,35 +266,30 @@ This metric is derived from RTK's own JSON output and is intended as an operatio
 ## Workflow Lifecycle
 
 ```text
-Linear Todo ──► In Progress ──► Draft PR ──► In Review ──► Human Review ──► Done
-                     ▲                            │              │
-                     │                            ▼              ▼
-                     └──── CI Fail (auto-fix) ◄─ CI Watcher    E2E Test
-                                                                 │  │
-                                                           Pass ─┘  └─ Fail
-                                                    PR → Ready       ↓
-                                                    Issue → Done   In Progress
+Linear Todo ──► In Progress ──► Human Review ──► submit-review ──► In Review / CI ──► Done
+                     ▲                │                  │                │
+                     │                │                  │                ▼
+                     └──── auto-fix ◄─┴──── E2E Fail ◄───┴──── CI Fail ── In Progress
 ```
 
 1. **Scheduler** picks up active issues from Linear (when `auto_dispatch: true`) or waits for manual trigger via TUI
-2. **Worker** runs the configured agent backend (Cursor ACP or Claude Code) through multi-turn execution (plan → code → test → PR)
-3. Agent creates a **draft PR** and moves the issue to **In Review** — the PR stays in draft throughout CI and review
-4. **CI Watcher** monitors GitHub CI; on success, transitions to **Human Review**; on failure, moves back to **In Progress** for automated fix
-5. **TUI E2E Test** provides a manual quality gate in `Human Review`:
-   - **Pass**: converts the draft PR to **ready for review**, then moves the issue to **Done**
-   - **Fail**: records failure details, moves back to **In Progress** for the agent to fix
+2. **Worker** runs the configured agent backend through multi-turn execution and stops at **Human Review**
+3. **Human Review** happens in the preserved workspace, where you can inspect the code and run local checks
+4. **TUI E2E Test** is the submit gate:
+   - **Pass**: commits and pushes changes, creates or updates the PR, then either waits for CI or merges immediately
+   - **Fail**: records failure details and moves the issue back to **In Progress** for another agent pass
+5. **CI Watcher** monitors GitHub CI for submitted PRs; on success it auto-merges and marks **Done**, on failure it moves back to **In Progress**
 
 ## Human-in-the-Loop
 
-When the agent cannot proceed autonomously (e.g. ambiguous requirements, failing tests),
-it moves the Linear issue to **Human Review** state. Maestro:
+When the agent completes its coding pass or needs a human decision, it moves the Linear issue to **Human Review**. Maestro:
 
 1. Detects the state change and stops the worker
 2. Preserves the workspace for human inspection
 3. Does not reschedule until the issue moves back to an active state
 
 The TUI provides an **E2E Test** action for issues in Human Review:
-- **Pass**: converts the draft PR to ready for review, marks the issue as Done, and adds a success comment on Linear
+- **Pass**: submits the reviewed branch, creates or updates the PR, and then either waits for CI or merges automatically
 - **Fail**: records the failure reason, adds a comment to Linear, and moves the issue back to In Progress for the agent to automatically fix
 
 ## Skill Evolution

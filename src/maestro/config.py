@@ -100,7 +100,7 @@ class AcpConfig:
     permission_policy: str = "allow-once"
     turn_timeout_ms: int = 3_600_000
     client_name: str = "maestro"
-    client_version: str = "0.1.0"
+    client_version: str = "0.7.0"
     cursor_api_key: str | None = None
     token_exchange_url: str = "https://api2.cursor.sh/auth/exchange_user_api_key"
 

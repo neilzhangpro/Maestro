@@ -166,6 +166,12 @@ class TestClaudeCodeConfig:
         assert "Bash" in cfg.allowed_tools
         assert cfg.turn_timeout_ms == 3_600_000
 
+    def test_github_ci_pass_default_targets_human_review(self):
+        from maestro.workflow.config import GitHubConfig
+
+        cfg = GitHubConfig()
+        assert cfg.ci_pass_target_state == "Human Review"
+
     def test_from_workflow_backend_cursor_default(self, tmp_path, monkeypatch):
         """When no backend is specified, it defaults to 'cursor'."""
         wf = tmp_path / "WORKFLOW.md"
