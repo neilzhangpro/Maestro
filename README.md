@@ -72,7 +72,7 @@ Maestro is designed for that layer.
   <img src="docs/images/tui-workbench.png" alt="Maestro TUI Workbench" width="800" />
 </p>
 
-<p align="center"><em>Terminal workbench — real-time issue tracking, worker monitoring, and one-click actions</em></p>
+<p align="center"><em>Terminal workbench — real-time issue tracking, worker monitoring, and RTK token-savings visibility when enabled</em></p>
 
 ## Architecture
 
@@ -145,18 +145,24 @@ cp .env.example .env
 #    backend: cursor       — uses Cursor ACP (requires CURSOR_API_KEY)
 #    backend: claude_code  — uses Claude Code CLI (requires ANTHROPIC_API_KEY)
 
-# 3. Build and start (agent CLIs are installed inside the container at build time)
+# 3. One-command workbench
+make workbench
+
+# Alternative manual flow:
+# 3a. Build and start services
 make up
 
-# 4. Open the TUI workbench (in a separate terminal)
-make tui
+# 3b. Open the TUI workbench in another terminal
+make tui-docker
 
-# 5. View logs
+# 3c. View logs
 make logs
 ```
 
 The Docker build automatically downloads the agent CLI (Cursor or Claude Code)
-at build time. No host-side installation required.
+and installs `rtk` at build time. No host-side installation required.
+
+`make workbench` prefers `tmux` when available and opens three panes: service startup, `docker compose logs -f`, and the TUI running inside the `maestro` container. On macOS without `tmux`, it falls back to opening Terminal.app tabs automatically.
 
 ## Configuration
 
@@ -185,6 +191,11 @@ claude_code:                           # Claude Code backend settings
   max_turns_per_invocation: 0          # 0 = unlimited
   max_budget_usd: 0                    # 0 = unlimited; set a positive value to cap spend
 
+rtk:                                   # RTK token-reduction settings (Claude Code only)
+  enabled: true
+  mode: hook
+  binary: rtk
+
 agent:
   auto_dispatch: true                  # true for Docker production; false for TUI-only manual runs
   max_concurrent_agents: 2
@@ -201,6 +212,8 @@ github:
 
 **Switching backends:** Change `backend` to `cursor` or `claude_code`. Each backend reads its own config section. The `after_create` hook auto-generates both `.cursor/` and `.claude/` configurations from a single source — no backend-specific hook overrides needed.
 
+**RTK integration:** When `rtk.enabled: true` and `backend: claude_code`, Maestro configures RTK's Claude hook in the agent environment and appends RTK usage guidance to `CLAUDE.md`. This only affects Bash-driven workflows; Claude built-in `Read`, `Grep`, and `Glob` do not flow through RTK.
+
 **Skill evolution:** Enable the optional `evolution` block (see [Skill Evolution](#skill-evolution) for full details):
 
 ```yaml
@@ -211,15 +224,27 @@ evolution:
 
 **Switching projects:** Change `GITHUB_OWNER`, `GITHUB_REPO`, and `GITHUB_TOKEN` in `.env`. All Skills, hooks, and CI monitoring automatically use these values — no hardcoded repo references in WORKFLOW.md.
 
+## RTK Metrics
+
+When RTK is enabled, Maestro records the latest `rtk gain --all --format json` snapshot after each Claude Code turn and exposes a best-effort `estimated_tokens_saved` metric:
+
+- `GET /api/v1/state` includes an `rtk` object with `enabled`, `mode`, `binary`, `estimated_tokens_saved`, and `last_snapshot_at`
+- `GET /api/v1/orchestrator` includes the same `rtk` object alongside the combined dashboard payload
+- `make tui` shows an `RTK SAVED` stats card only when `rtk.enabled` is true
+
+This metric is derived from RTK's own JSON output and is intended as an operational estimate, not billing-grade accounting.
+
 ## Makefile Targets
 
 | Target | Description |
 |--------|-------------|
 | `make up` | Build and start all Docker services |
+| `make workbench` | One-command startup for services, logs, and TUI |
 | `make down` | Stop all services |
 | `make restart` | Rebuild and restart |
 | `make logs` | Tail all service logs |
 | `make tui` | Launch terminal workbench |
+| `make tui-docker` | Launch terminal workbench from inside the running container |
 | `make test` | Run unit tests |
 | `make clean` | Remove containers, volumes, and caches |
 
@@ -365,6 +390,14 @@ Maestro supports pluggable agent execution backends, switchable via `backend` in
 - **Team collaboration** — Multi-user TUI with role-based access and shared visibility
 
 ## Status
+
+**v0.8.0** — RTK token-savings integration + runtime/TUI visibility.
+
+**Changelog (v0.8.0):**
+- **RTK integration for Claude Code** — Docker image now installs `rtk`; `after_create` configures the Claude hook and appends RTK usage guidance to `CLAUDE.md`
+- **RTK metrics in execution history** — `RunRecord` now stores the latest RTK gain snapshot per turn when available
+- **API visibility** — `/api/v1/state` and `/api/v1/orchestrator` now expose RTK enablement and estimated token savings
+- **TUI visibility** — stats panel now shows `RTK SAVED` when the feature is enabled in `WORKFLOW.md`
 
 **v0.7.0** — Skill self-evolution system + Cursor auth token auto-refresh.
 

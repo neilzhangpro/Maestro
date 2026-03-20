@@ -12,6 +12,7 @@ from maestro.agent.events import AgentEvent, normalize_event, normalize_events
 from maestro.workflow.config import (
     ClaudeCodeConfig,
     ConfigError,
+    RtkConfig,
     ServiceConfig,
     validate_dispatch_config,
 )
@@ -208,6 +209,32 @@ class TestClaudeCodeConfig:
         assert config.claude_code.skip_permissions is True
         assert config.claude_code.max_budget_usd == 5.5
         assert config.claude_code.api_key == "anthro-key"
+        assert config.rtk.enabled is False
+
+    def test_rtk_config_is_parsed(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "anthro-key")
+        monkeypatch.setenv("LINEAR_API_KEY", "linear-key")
+        wf = tmp_path / "WORKFLOW.md"
+        wf.write_text(
+            "---\n"
+            "backend: claude_code\n"
+            "tracker:\n  api_key: $LINEAR_API_KEY\n"
+            "rtk:\n"
+            "  enabled: true\n"
+            "  mode: hook\n"
+            "  binary: /usr/local/bin/rtk\n"
+            "claude_code:\n"
+            "  model: opus\n"
+            "---\nPrompt\n",
+            encoding="utf-8",
+        )
+
+        from maestro.workflow.loader import load_workflow
+        wd = load_workflow(wf)
+        config = ServiceConfig.from_workflow(wd)
+        assert config.rtk.enabled is True
+        assert config.rtk.mode == "hook"
+        assert config.rtk.binary == "/usr/local/bin/rtk"
 
     def test_unsupported_backend_raises(self, tmp_path, monkeypatch):
         monkeypatch.setenv("LINEAR_API_KEY", "x")
@@ -240,6 +267,7 @@ class TestValidateDispatch:
             agent=AgentConfig(),
             server=ServerConfig(),
             github=GitHubConfig(),
+            rtk=RtkConfig(),
             prompt_template="test",
             workflow_path=Path("."),
             backend=backend,
@@ -279,7 +307,7 @@ class TestResolvedHooks:
     def _base_config(self, backend, hooks_kwargs):
         from maestro.workflow.config import (
             TrackerConfig, PollingConfig, WorkspaceConfig, HooksConfig,
-            CursorConfig, AgentConfig, ServerConfig, GitHubConfig,
+            CursorConfig, AgentConfig, ServerConfig, GitHubConfig, RtkConfig,
         )
         return ServiceConfig(
             tracker=TrackerConfig(kind="linear", api_key="k"),
@@ -291,6 +319,7 @@ class TestResolvedHooks:
             agent=AgentConfig(),
             server=ServerConfig(),
             github=GitHubConfig(),
+            rtk=RtkConfig(),
             prompt_template="",
             workflow_path=Path("."),
             backend=backend,

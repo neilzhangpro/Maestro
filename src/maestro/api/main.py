@@ -69,7 +69,7 @@ def create_app(
         """Combined state endpoint for the dashboard."""
         result: dict = {"status": "no_scheduler"}
         if scheduler:
-            snapshot = scheduler.state.snapshot()
+            snapshot = scheduler.snapshot()
             snapshot["runs"] = run_manager.list_runs()
             result = snapshot
         return result

@@ -131,6 +131,17 @@ def _elapsed(seconds: float) -> str:
     return f"{h}h{m:02d}m"
 
 
+def _fmt_token_count(value: int | float | None) -> str:
+    if not value:
+        return "0"
+    n = int(value)
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    if n >= 1_000:
+        return f"{n / 1_000:.1f}k"
+    return str(n)
+
+
 def _clear() -> None:
     os.system("clear" if sys.platform != "win32" else "cls")
 
@@ -158,19 +169,24 @@ def render_header(console: Console, connected: bool) -> None:
 def render_stats(console: Console, orch: dict[str, Any], issue_count: int) -> None:
     counts = orch.get("counts", {})
     totals = orch.get("totals", {})
+    rtk = orch.get("rtk", {})
     running = counts.get("running", 0)
     retrying = counts.get("retrying", 0)
     queued = max(issue_count - running, 0)
     secs = totals.get("seconds_running", 0)
 
     grid = Table.grid(padding=(0, 3))
-    grid.add_row(
+    cells = [
         _stat_cell("ISSUES", str(issue_count), "cyan"),
         _stat_cell("READY", str(queued), "white"),
         _stat_cell("RUNNING", str(running), "yellow" if running else "dim"),
         _stat_cell("RETRYING", str(retrying), "red" if retrying else "dim"),
         _stat_cell("AGENT TIME", _elapsed(secs), "green"),
-    )
+    ]
+    if rtk.get("enabled"):
+        saved = _fmt_token_count(rtk.get("estimated_tokens_saved", 0))
+        cells.append(_stat_cell("RTK SAVED", saved, "magenta"))
+    grid.add_row(*cells)
     console.print(
         Panel(grid, border_style="bright_black", box=box.HEAVY_EDGE, padding=(0, 1)),
     )

@@ -7,8 +7,13 @@ from pathlib import Path
 import typer
 
 from maestro import __version__
+from maestro.config import LinearConfig, load_config
+from maestro.linear.client import LinearClient
+from maestro.workspace.manager import WorkspaceManager
 
 app = typer.Typer(help="Maestro — Symphony-compatible coding agent orchestrator.")
+workspace_app = typer.Typer(help="Workspace utilities.")
+app.add_typer(workspace_app, name="workspace")
 
 
 @app.command()
@@ -153,26 +158,33 @@ def tui(
 @app.command("list")
 def list_issues(
     workflow: Path = typer.Argument(None, help="Path to WORKFLOW.md"),
+    config: Path | None = typer.Option(
+        None,
+        "--config",
+        help="Path to legacy maestro.yaml config.",
+    ),
     state: list[str] | None = typer.Option(None, "--state", help="Filter by state."),
 ) -> None:
     """List candidate Linear issues."""
-    from maestro.workflow.config import ServiceConfig
-    from maestro.workflow.loader import load_workflow
-    from maestro.config import LinearConfig
-    from maestro.linear.client import LinearClient
+    if config is not None:
+        loaded = load_config(config)
+        linear_cfg = loaded.linear
+    else:
+        from maestro.workflow.config import ServiceConfig
+        from maestro.workflow.loader import load_workflow
 
-    wd = load_workflow(workflow)
-    config = ServiceConfig.from_workflow(wd)
-    linear_cfg = LinearConfig(
-        api_key=config.tracker.api_key,
-        api_url=config.tracker.endpoint,
-        project_slug=config.tracker.project_slug or None,
-        team_id=config.tracker.team_id,
-        assignee=config.tracker.assignee,
-        active_states=config.tracker.active_states,
-        terminal_states=config.tracker.terminal_states,
-        timeout_s=config.tracker.timeout_s,
-    )
+        wd = load_workflow(workflow)
+        service_config = ServiceConfig.from_workflow(wd)
+        linear_cfg = LinearConfig(
+            api_key=service_config.tracker.api_key,
+            api_url=service_config.tracker.endpoint,
+            project_slug=service_config.tracker.project_slug or None,
+            team_id=service_config.tracker.team_id,
+            assignee=service_config.tracker.assignee,
+            active_states=service_config.tracker.active_states,
+            terminal_states=service_config.tracker.terminal_states,
+            timeout_s=service_config.tracker.timeout_s,
+        )
 
     with LinearClient(linear_cfg) as client:
         issues = client.fetch_issues(state_names=state or None)
@@ -183,6 +195,21 @@ def list_issues(
 
     for issue in issues:
         typer.echo(f"{issue.identifier:<12} {issue.state:<15} {issue.title}")
+
+
+@workspace_app.command("show")
+def workspace_show(
+    issue_ref: str = typer.Argument(..., help="Issue identifier (e.g. MAE-42)"),
+    config: Path | None = typer.Option(
+        None,
+        "--config",
+        help="Path to maestro.yaml (default: ./config/maestro.yaml).",
+    ),
+) -> None:
+    """Print the local workspace path for an issue identifier."""
+    loaded = load_config(config)
+    manager = WorkspaceManager(loaded.workspace.root)
+    typer.echo(manager.workspace_path_for(issue_ref))
 
 
 if __name__ == "__main__":
