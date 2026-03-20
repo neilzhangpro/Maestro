@@ -36,3 +36,9 @@ config/maestro.local.yaml
 .vscode/
 .idea/
 screen_shot.png
+
+# Local agent/workspace support files
+.cursor/
+.claude/
+CLAUDE.md
+.maestro/

@@ -291,6 +291,7 @@ class Scheduler:
         if entry:
             runtime_s = (datetime.now(timezone.utc) - entry.started_at).total_seconds()
             self.state.add_runtime_seconds(runtime_s)
+            self.state.record_exit(entry, reason=reason, error=error)
             identifier = entry.identifier
             current_attempt = entry.retry_attempt
         else:
@@ -298,6 +299,8 @@ class Scheduler:
             current_attempt = None
 
         if reason == "normal":
+            if entry:
+                self._reconciler.ensure_handoff_for_issue(issue_id, entry.identifier)
             log.info("Worker %s exited normally — cooldown applied.", identifier)
             self.state.mark_completed(issue_id)
         else:

@@ -56,5 +56,12 @@ class MaestroAPIClient:
             f"/api/issues/{issue_ref}/mark-pr-ready",
         ).raise_for_status().json()
 
+    def submit_review(self, issue_ref: str, e2e_summary: str | None = None) -> dict[str, Any]:
+        return self._http.post(
+            f"/api/issues/{issue_ref}/submit-review",
+            json={"e2e_summary": e2e_summary},
+            timeout=httpx.Timeout(120.0, connect=10.0),
+        ).raise_for_status().json()
+
     def close(self) -> None:
         self._http.close()

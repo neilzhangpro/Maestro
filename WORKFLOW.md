@@ -1,11 +1,11 @@
 ---
-backend: cursor
+backend: claude_code
 
 tracker:
   kind: linear
   api_key: $LINEAR_API_KEY
   project_slug: ""
-  team_id: "e9628d4c-7a56-454b-964d-6276b7138652"
+  team_id: "44e89227-64cb-42b9-81a6-6021aa7fe959"
   assignee: ""
   active_states: [Backlog, Todo, In Progress]
   terminal_states: [Done, Cancelled, Closed]
@@ -285,12 +285,12 @@ hooks:
     cat > .cursor/skills/git-branch-sync/SKILL.md << 'SKILL_EOF'
     ---
     name: git-branch-sync
-    description: Sync local repo with remote main branch, create feature branches, and manage pre-commit/pre-push checks. Use when starting new work, before making commits, when user says "start working on", "create branch", "sync with main", "pull latest", or before submitting a PR.
+    description: Sync the local repo with the current stable trunk branch, create a feature branch, and validate branch hygiene before development starts. Use when starting new work or when user says "start working on", "create branch", "sync trunk", or "pull latest".
     ---
 
-    # Git Branch Sync — Branch Management & Conflict Prevention
+    # Git Branch Sync — Pre-Human-Review Branch Management
 
-    Use this skill at the **start of any development task** and **before submitting PRs** to ensure you're working on the latest code, on a properly named branch, and free of conflicts.
+    Use this skill at the **start of any development task** to ensure you are on a dedicated feature branch derived from the current stable trunk branch. This skill stops at development readiness; it does not submit code.
 
     ## Prerequisites
 
@@ -308,19 +308,20 @@ hooks:
     git remote -v
     ```
 
-    - If there are uncommitted changes, **stash them first** with `git stash` or ask the user to commit/discard.
+    - If there are uncommitted changes, review them carefully first. Do not hide unknown work with `git stash` unless explicitly requested.
     - Note the current branch name.
 
-    ### Step 2: Sync with Main
+    ### Step 2: Detect and Sync with Stable Trunk
 
     ```bash
-    git checkout main
+    git symbolic-ref --quiet --short refs/remotes/origin/HEAD | sed 's#^origin/##'
     git fetch origin
-    git pull origin main
     ```
 
-    - If `main` doesn't exist, try `master` as fallback.
-    - If pull fails due to conflicts, alert the user and stop.
+    - Prefer the remote default branch.
+    - If the remote default branch is unavailable, fall back to `main`, then `master`.
+    - If no stable trunk branch exists yet, stop and hand off; Maestro's submission pipeline will normalize the repository later.
+    - If sync fails due to conflicts, alert the user and stop.
 
     ### Step 3: Create Feature Branch
 
@@ -359,43 +360,43 @@ hooks:
     git log --oneline -3
     ```
 
-    Confirm the new branch is based on the latest main.
+    Confirm the new branch is based on the latest stable trunk.
 
     ---
 
-    ## Pre-PR Conflict Prevention Checklist
+    ## Pre-Human-Review Conflict Prevention Checklist
 
-    **CRITICAL: Always perform these checks before creating a PR or pushing final changes.**
+    **CRITICAL: Always perform these checks before handing off to Human Review.**
 
-    ### Check 1: Rebase onto Latest Main
+    ### Check 1: Rebase onto Latest Stable Trunk
 
-    Before submitting a PR, always rebase your branch onto the latest `origin/main` to catch conflicts early:
+    Before handing off, rebase your branch onto the latest stable trunk to catch conflicts early:
 
     ```bash
-    git fetch origin main
-    git log --oneline HEAD..origin/main   # see what main has that we don't
-    git diff origin/main...HEAD --stat    # see our changes vs main
+    git fetch origin <trunk>
+    git log --oneline HEAD..origin/<trunk>
+    git diff origin/<trunk>...HEAD --stat
     ```
 
-    If `origin/main` has new commits:
+    If `origin/<trunk>` has new commits:
 
     ```bash
-    git rebase origin/main
+    git rebase origin/<trunk>
     ```
 
     If rebase has conflicts, resolve them locally (much easier than fixing on GitHub).
 
     ### Check 2: Detect Overlapping Work
 
-    Check if any of your changed files were also modified on `main` since you branched:
+    Check if any of your changed files were also modified on the stable trunk since you branched:
 
     ```bash
     # Files changed in our branch
-    git diff origin/main...HEAD --name-only > /tmp/our-files.txt
+    git diff origin/<trunk>...HEAD --name-only > /tmp/our-files.txt
 
-    # Files changed on main since we branched
-    MERGE_BASE=$(git merge-base HEAD origin/main)
-    git diff $MERGE_BASE..origin/main --name-only > /tmp/main-files.txt
+    # Files changed on trunk since we branched
+    MERGE_BASE=$(git merge-base HEAD origin/<trunk>)
+    git diff $MERGE_BASE..origin/<trunk> --name-only > /tmp/main-files.txt
 
     # Overlapping files (potential conflicts)
     comm -12 <(sort /tmp/our-files.txt) <(sort /tmp/main-files.txt)
@@ -407,7 +408,7 @@ hooks:
 
     ### Check 3: Verify API Compatibility
 
-    When tests reference internal functions/classes, verify they still exist on `main`:
+    When tests reference internal functions/classes, verify they still exist on the current stable trunk branch:
 
     ```bash
     # Example: check if a function still exists at the expected import path
@@ -422,7 +423,7 @@ hooks:
 
     ### Check 4: Local CI Simulation
 
-    Run the same checks CI will run before pushing:
+    Run the same checks your repo would expect before Human Review:
 
     ```bash
     # Lint + type check
@@ -446,19 +447,19 @@ hooks:
 
     ### Prevention Rules
 
-    1. **One owner per file area** — If a refactoring PR is in-flight for a module, do NOT modify the same files in another branch
-    2. **Small, focused PRs** — Keep PRs scoped to a single concern. Separate tests, config, and core changes into distinct PRs when possible
-    3. **Check main before starting** — Run `git log origin/main --oneline -10` to see recent merges that might overlap with your planned work
+    1. **One owner per file area** — If a refactoring branch is in-flight for a module, do NOT modify the same files in another branch
+    2. **Small, focused branches** — Keep each issue scoped to a single concern.
+    3. **Check trunk before starting** — Run `git log origin/<trunk> --oneline -10` to see recent merges that might overlap with your planned work
     4. **Communicate via Linear** — Before starting work on shared code areas, check if related issues are already in progress
 
     ### Recovery: When Duplicate Work Happens
 
     If you discover your branch overlaps with recently merged changes:
 
-    1. **Identify unique additions** — What does your branch have that `main` does not?
-    2. **Reset to main** — `git reset --hard origin/main`
+    1. **Identify unique additions** — What does your branch have that trunk does not?
+    2. **Reset to trunk** — `git reset --hard origin/<trunk>`
     3. **Cherry-pick or re-apply only unique changes** — Copy unique files from backup, not the overlapping ones
-    4. **Force push** — `git push --force-with-lease` to update the PR
+    4. Do not push from the agent. Hand off for Human Review if the branch needs submission help.
 
     ---
 
@@ -473,9 +474,9 @@ hooks:
 
     | Error | Action |
     |-------|--------|
-    | Uncommitted changes | `git stash`, proceed, remind user to `git stash pop` later |
+    | Uncommitted changes | Review them carefully; do not hide unknown changes with `git stash` unless explicitly requested |
     | Branch already exists | Ask user: checkout existing or create with suffix? |
-    | Pull conflicts on main | Alert user, do NOT force-resolve |
+    | Pull conflicts on trunk | Alert user, do NOT force-resolve |
     | No remote configured | Alert user to set up remote first |
     | Rebase conflicts | Resolve interactively, `git rebase --continue` after each fix |
     | Duplicate work detected | Follow Recovery procedure above |
@@ -484,18 +485,18 @@ hooks:
     cat > .cursor/skills/pr-create-describe/SKILL.md << 'SKILL_EOF'
     ---
     name: pr-create-describe
-    description: Commit changes, push branch, and create a GitHub Pull Request with an auto-generated description based on code diff and Linear issue context. Use when user says "create PR", "submit PR", "push and create pull request", or "open a PR".
+    description: Human-review submission reference for commit, push, and PR creation after Human Review is complete. Not for normal development turns; Maestro's submission pipeline handles this by default.
     ---
 
-    # PR Create & Describe — Commit, Push, and Open Pull Request
+    # PR Create & Describe — Post-Human-Review Reference
 
-    Use this skill to **commit staged changes, push the branch, and create a well-described PR** linking code changes to the requirement context.
+    Use this skill only when a human explicitly wants to perform or inspect the submission steps manually after Human Review. During normal agent development, stop at Human Review and let Maestro handle submission.
 
     ## Prerequisites
 
-    - On a feature branch (not `main`/`master`)
-    - Changes are ready to commit (or already committed)
-    - Repository has a remote `origin`
+    - Human Review is complete
+    - Submission is being done manually or audited explicitly
+    - Repository has a stable trunk branch, ideally `main`
 
     ## Step-by-Step Procedure
 
@@ -636,18 +637,18 @@ hooks:
 
     - If the user doesn't specify a Linear issue ID, skip the Linear section in the PR body
     - If GitNexus is not available or returns errors, fall back to `git diff --stat` for the impact section
-    - Always ensure the PR base is `main` unless the user specifies otherwise
+    - Prefer `main` as the PR base after repository bootstrap is complete
     SKILL_EOF
     mkdir -p .cursor/skills/ci-monitor-fix
     cat > .cursor/skills/ci-monitor-fix/SKILL.md << 'SKILL_EOF'
     ---
     name: ci-monitor-fix
-    description: Monitor CI/CD check status after a PR is submitted, retrieve error logs on failure, and fix issues automatically. Use when user says "check CI", "monitor PR checks", "fix CI", "CI failed", or after creating a PR.
+    description: Post-submission CI troubleshooting reference. Maestro's CI watcher handles normal polling and merge flow automatically; use this only when a human explicitly asks for manual CI investigation or repair.
     ---
 
-    # CI Monitor & Fix — Automatic CI Monitoring Loop
+    # CI Monitor & Fix — Manual Post-Submission Reference
 
-    Use this skill **after a PR is created** to automatically monitor CI/CD pipeline status, retrieve failure logs, fix issues, and re-monitor until all checks pass.
+    Use this skill only for manual follow-up after a PR exists. Normal polling, CI pass/fail transitions, and automatic merge are handled by Maestro.
 
     ## Prerequisites
 
@@ -895,16 +896,16 @@ hooks:
     cat > .cursor/skills/linear-update-on-pr/SKILL.md << 'SKILL_EOF'
     ---
     name: linear-update-on-pr
-    description: Update Linear issue status and add a comment with PR link after a PR passes CI checks. Use when user says "update Linear", "mark issue done", "PR is ready", or after CI checks pass successfully.
+    description: Reference for manual Linear synchronization after PR activity. Maestro updates Linear states and comments automatically during Human Review, submission, CI, and merge; use this only when a human explicitly needs manual correction.
     ---
 
-    # Linear Update on PR — Sync Issue Status After PR Success
+    # Linear Update on PR — Manual Recovery Reference
 
-    Use this skill **after a PR has been created and CI checks have passed** to update the corresponding Linear issue.
+    Use this skill only when a human needs to repair or audit Linear state after the automated pipeline has already tried to sync it.
 
     ## Prerequisites
 
-    - A PR exists and CI checks have passed (or PR is ready for review)
+    - A PR exists and a human explicitly wants to correct Linear manually
     - The Linear issue ID is known (e.g., `NA-35` from the branch name or PR title)
     - MCP `user-linear` is configured
 
@@ -944,16 +945,16 @@ hooks:
     }
     ```
 
-    **Status transition map:**
+    **Preferred status map:**
 
     | PR Event | Target Linear Status |
     |----------|---------------------|
-    | Draft PR created, CI pending | `In Review` |
-    | Draft PR created, CI passed | `In Review` |
+    | PR created / CI pending | `In Review` |
     | PR merged | `Done` |
-
+    | CI failed | `In Progress` |
     - If the issue is already in the target status, skip the update.
-    - If the team uses different status names, call `list_issue_statuses` first to discover available statuses, then pick the closest match.
+    - If the team uses different status names, discover available statuses first and pick the closest match.
+    - During normal operation, let Maestro handle this automatically.
 
     ### Step 4: Add PR Link as Comment
 
@@ -1050,13 +1051,42 @@ hooks:
     echo "[workspace-init] Generated .claude/mcp.json and CLAUDE.md"
     if [ -n "${GITHUB_TOKEN:-}" ]; then
       echo "[workspace-init] Cloning repository..."
-      git clone --depth=1 "https://x-access-token:${GITHUB_TOKEN}@github.com/$GITHUB_OWNER/$GITHUB_REPO.git" . 2>/dev/null || true
+      if ! git clone --depth=1 "https://x-access-token:${GITHUB_TOKEN}@github.com/$GITHUB_OWNER/$GITHUB_REPO.git" . 2>/dev/null; then
+        echo "[workspace-init] Clone skipped or remote is empty; initializing local git repository."
+        git init >/dev/null 2>&1 || true
+        git remote add origin "https://github.com/$GITHUB_OWNER/$GITHUB_REPO.git" 2>/dev/null || \
+          git remote set-url origin "https://github.com/$GITHUB_OWNER/$GITHUB_REPO.git" 2>/dev/null || true
+      fi
+    fi
+    if [ -d .git ]; then
+      mkdir -p .git/info
+      {
+        echo ".cursor/"
+        echo ".claude/"
+        echo "CLAUDE.md"
+        echo ".maestro/"
+      } >> .git/info/exclude
+      python3 -c 'from pathlib import Path; p=Path(".git/info/exclude"); seen=[]; [seen.append(line) for line in (raw.strip() for raw in p.read_text(encoding="utf-8").splitlines()) if line and line not in seen]; p.write_text("\\n".join(seen) + "\\n", encoding="utf-8")'
+      echo "[workspace-init] Ignoring local agent support files via .git/info/exclude"
     fi
   before_run: |
     if [ -d .git ]; then
-      echo "[workspace-sync] Rebasing onto latest origin/main..."
-      git fetch origin main --quiet 2>/dev/null || true
-      git rebase origin/main --quiet 2>/dev/null || echo "[workspace-sync] Rebase skipped (not on a branch yet)"
+      DEFAULT_BRANCH=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##')
+      if [ -z "$DEFAULT_BRANCH" ]; then
+        for candidate in main master; do
+          if git ls-remote --exit-code --heads origin "$candidate" >/dev/null 2>&1; then
+            DEFAULT_BRANCH="$candidate"
+            break
+          fi
+        done
+      fi
+      if [ -n "$DEFAULT_BRANCH" ]; then
+        echo "[workspace-sync] Rebasing onto latest origin/$DEFAULT_BRANCH..."
+        git fetch origin "$DEFAULT_BRANCH" --quiet 2>/dev/null || true
+        git rebase "origin/$DEFAULT_BRANCH" --quiet 2>/dev/null || echo "[workspace-sync] Rebase skipped (not on a branch yet)"
+      else
+        echo "[workspace-sync] No default branch detected on origin; skipping rebase."
+      fi
     fi
     # Sync evolved Skills into the workspace's .cursor/skills directory
     if [ -n "$MAESTRO_WORKSPACE_ROOT" ] && [ -d "$MAESTRO_WORKSPACE_ROOT/.maestro/evolved_skills" ]; then
@@ -1196,32 +1226,35 @@ claude_code:
 
 agent:
   auto_dispatch: false
-  max_concurrent_agents: 2
+  max_concurrent_agents: 5
   max_turns: 10
   max_retry_backoff_ms: 300000
-  max_concurrent_agents_by_state: {}
+  max_concurrent_agents_by_state:
+    backlog: 1
+    todo: 3
+    in progress: 5
 
 github:
   token: $GITHUB_TOKEN
-  owner: Novamind-Labs-Ltd
+  owner: $GITHUB_OWNER
   repo: $GITHUB_REPO
   ci_watch_states: [In Review]
   ci_poll_interval_ms: 60000
   ci_max_wait_ms: 1800000
-  ci_pass_target_state: Human Review
+  ci_pass_target_state: Done
   ci_fail_target_state: In Progress
 
 server:
   port: 8080
 
 evolution:
-  enabled: false
-  min_runs_between: 10        # trigger after this many successful runs since last cycle
-  min_interval_minutes: 60    # minimum wall-clock minutes between cycles
-  max_addendum_tokens: 500    # soft cap on addendum length (passed as guidance to the agent)
-  max_new_skills_per_cycle: 2 # maximum new Skills created per cycle
-  min_pattern_occurrences: 3  # a flow pattern must appear this many times to become a Skill
-  auto_apply: false           # false → new Skills land in pending_skills/ for review; true → apply directly
+  enabled: true
+  min_runs_between: 12        # wait for enough successful runs to avoid overfitting early noise
+  min_interval_minutes: 180   # evolve at most every 3 hours to keep changes reviewable
+  max_addendum_tokens: 350    # keep learned addenda concise and high-signal
+  max_new_skills_per_cycle: 1 # limit each cycle to one new Skill candidate for easier human review
+  min_pattern_occurrences: 4  # require stronger repetition before mutating or proposing a Skill
+  auto_apply: false           # keep human review in the loop; write candidates to pending_skills/
 ---
 
 You are working on issue **{{ issue.identifier }}: {{ issue.title }}**.
@@ -1241,27 +1274,32 @@ You are working on issue **{{ issue.identifier }}: {{ issue.title }}**.
 {% endfor %}{% endif %}
 
 ## Instructions
-1. **Branch setup** — Read and follow `.cursor/skills/git-branch-sync/SKILL.md` to ensure you are on a dedicated feature branch based on the latest `origin/main`. This is mandatory before any code changes.
+1. **Branch setup** — Read and follow `.cursor/skills/git-branch-sync/SKILL.md` to ensure you are on a dedicated feature branch based on the latest stable trunk branch. This is mandatory before any code changes.
 2. Read the codebase and understand the project structure.
 3. Implement the changes described above.
 4. Write or update tests for your changes.
 5. Ensure all existing tests still pass.
 6. Check `sandbox-test-results.txt` if it exists — it contains results from the automated sandbox test runner that ran after the previous turn. If it shows `FAILED`, fix the reported errors before proceeding.
 7. If `SANDBOX_TEST_FAILED` file exists in the workspace root, tests have not yet passed — do not move to Human Review until it is gone.
-8. **Create PR** — Read and follow `.cursor/skills/pr-create-describe/SKILL.md` to rebase onto latest `origin/main`, resolve any conflicts, and create a **Draft** Pull Request.
-9. **Monitor CI** — Read and follow `.cursor/skills/ci-monitor-fix/SKILL.md` to monitor CI/CD pipeline status, fix failures, and re-push until all checks pass.
-10. **Update Linear** — Read and follow `.cursor/skills/linear-update-on-pr/SKILL.md` to move the issue to **In Review** after CI passes.
-    - Maestro's CI Watcher will automatically verify the result and move the issue to **Human Review** when CI is confirmed green, or back to **In Progress** if CI fails.
-    - A human will then perform E2E testing and merge the PR. **You must NOT do this yourself.**
+8. **Human handoff only** — Once implementation and local validation are complete, move the issue to **Human Review**.
+9. Add a short Linear comment that summarizes:
+   - what changed
+   - what you validated locally
+   - any remaining risks, follow-ups, or assumptions
+10. Stop after the handoff. Human Review and Maestro's submission pipeline handle commit, push, PR, CI, and merge after the handoff.
 
 ## Strictly Forbidden Actions
 You MUST NOT perform any of the following — these are controlled by Maestro's automated pipeline and human reviewers:
+- **Do NOT run `git commit`.**
+- **Do NOT run `git push`.**
+- **Do NOT create or update any Pull Request.**
+- **Do NOT move the issue to `In Review` or `Done` when development is complete.**
 - **Do NOT merge any Pull Request** (no merge, squash-merge, or rebase-merge).
 - **Do NOT mark a Draft PR as "Ready for Review"** — the CI Watcher and E2E test gate handle this.
 - **Do NOT request reviewers** on any PR.
 - **Do NOT rename PR titles** after creation.
 - **Do NOT enable auto-merge** on any PR.
-If CI requires a non-draft PR to trigger, configure the GitHub Actions workflow to run on `pull_request` with types including `opened, synchronize, reopened` — do NOT work around it by converting the draft.
+If the code is ready, the required terminal action is to move the issue to **Human Review**, leave the handoff comment, and stop.
 
 ## Decision Policy
 - If you encounter a problem that requires human judgment (e.g., architectural decisions, ambiguous requirements, security-sensitive changes), **stop working and update the issue state to Human Review** with a comment explaining what decision is needed.

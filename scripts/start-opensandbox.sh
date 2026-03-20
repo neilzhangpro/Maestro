@@ -9,7 +9,11 @@ echo "==> Installing opensandbox-server..."
 pip install opensandbox-server -q
 
 echo "==> Generating config..."
-opensandbox-server init-config /root/.sandbox.toml --example docker
+if [ ! -f /root/.sandbox.toml ]; then
+  opensandbox-server init-config /root/.sandbox.toml --example docker
+else
+  echo "Config already exists at /root/.sandbox.toml; reusing existing config."
+fi
 
 # Patch localhost → 0.0.0.0 so the server is reachable from other containers.
 sed -i 's|host = "127.0.0.1"|host = "0.0.0.0"|g' /root/.sandbox.toml 2>/dev/null || true

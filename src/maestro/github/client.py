@@ -1,9 +1,10 @@
-"""GitHub REST API client for PR and CI status queries."""
+"""GitHub REST API client for PR, merge, and CI status queries."""
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 import httpx
@@ -19,9 +20,11 @@ class PRInfo:
     title: str
     state: str
     merged: bool
+    draft: bool
     head_sha: str
     html_url: str
     branch: str
+    created_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -224,6 +227,92 @@ class GitHubClient:
             log.warning("Failed to mark PR #%d as ready for review", pr_number, exc_info=True)
             return False
 
+    def create_pull_request(
+        self,
+        owner: str,
+        repo: str,
+        *,
+        title: str,
+        body: str,
+        head: str,
+        base: str = "main",
+        draft: bool = False,
+    ) -> PRInfo:
+        """Create a new pull request via the REST API."""
+        try:
+            resp = self._client.post(
+                f"/repos/{owner}/{repo}/pulls",
+                json={
+                    "title": title,
+                    "body": body,
+                    "head": head,
+                    "base": base,
+                    "draft": draft,
+                },
+            )
+            resp.raise_for_status()
+            return self._parse_pr(resp.json())
+        except httpx.HTTPStatusError as exc:
+            detail = ""
+            try:
+                payload = exc.response.json()
+                detail = payload.get("message", "")
+                if payload.get("errors"):
+                    detail = f"{detail} | {payload['errors']}"
+            except Exception:
+                detail = exc.response.text
+            raise GitHubError(
+                f"Failed to create pull request for branch '{head}': {detail or exc}"
+            ) from exc
+        except Exception as exc:
+            raise GitHubError(f"Failed to create pull request for branch '{head}'.") from exc
+
+    def get_repo_default_branch(self, owner: str, repo: str) -> str:
+        """Return the repository default branch name."""
+        try:
+            resp = self._client.get(f"/repos/{owner}/{repo}")
+            resp.raise_for_status()
+            return resp.json().get("default_branch") or "main"
+        except Exception as exc:
+            raise GitHubError(f"Failed to read default branch for {owner}/{repo}.") from exc
+
+    def set_default_branch(self, owner: str, repo: str, branch: str) -> None:
+        try:
+            resp = self._client.patch(
+                f"/repos/{owner}/{repo}",
+                json={"default_branch": branch},
+            )
+            resp.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise GitHubError(
+                f"Failed to set default branch for {owner}/{repo} to {branch}: {exc.response.text}"
+            ) from exc
+        except Exception as exc:
+            raise GitHubError(
+                f"Failed to set default branch for {owner}/{repo} to {branch}."
+            ) from exc
+
+    def merge_pull_request(
+        self,
+        owner: str,
+        repo: str,
+        pr_number: int,
+        *,
+        method: str = "squash",
+    ) -> bool:
+        try:
+            resp = self._client.put(
+                f"/repos/{owner}/{repo}/pulls/{pr_number}/merge",
+                json={"merge_method": method},
+            )
+            resp.raise_for_status()
+            return bool(resp.json().get("merged", False))
+        except httpx.HTTPStatusError as exc:
+            detail = exc.response.text
+            raise GitHubError(f"Failed to merge PR #{pr_number}: {detail}") from exc
+        except Exception as exc:
+            raise GitHubError(f"Failed to merge PR #{pr_number}.") from exc
+
     def _get_pr_node_id(self, owner: str, repo: str, pr_number: int) -> str | None:
         try:
             resp = self._client.get(f"/repos/{owner}/{repo}/pulls/{pr_number}")
@@ -235,12 +324,21 @@ class GitHubClient:
     @staticmethod
     def _parse_pr(data: dict[str, Any]) -> PRInfo:
         head = data.get("head", {})
+        created_at = None
+        raw_created_at = data.get("created_at")
+        if raw_created_at:
+            try:
+                created_at = datetime.fromisoformat(raw_created_at.replace("Z", "+00:00"))
+            except ValueError:
+                created_at = None
         return PRInfo(
             number=data["number"],
             title=data.get("title", ""),
             state=data.get("state", "unknown"),
             merged=data.get("merged", False),
+            draft=bool(data.get("draft", False)),
             head_sha=head.get("sha", ""),
             html_url=data.get("html_url", ""),
             branch=head.get("ref", ""),
+            created_at=created_at,
         )

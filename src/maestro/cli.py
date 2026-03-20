@@ -60,7 +60,7 @@ def run_once(
     from maestro.linear.models import Issue
     from maestro.workflow.config import ConfigError, ServiceConfig
     from maestro.workflow.loader import WorkflowLoadError, load_workflow
-    from maestro.workflow.template import render_prompt
+    from maestro.workflow.template import compose_agent_prompt, render_prompt
     from maestro.workspace.hooks import ShellHooks
     from maestro.workspace.manager import WorkspaceManager
     from maestro.config import LinearConfig
@@ -102,10 +102,12 @@ def run_once(
     workspace = manager.prepare_workspace(issue.identifier)
     manager.run_before(workspace)
 
-    prompt = render_prompt(
-        config.prompt_template,
-        issue=issue.to_template_dict(),
-        backend=config.backend,
+    prompt = compose_agent_prompt(
+        render_prompt(
+            config.prompt_template,
+            issue=issue.to_template_dict(),
+            backend=config.backend,
+        )
     )
 
     typer.echo(f"Issue:     {issue.identifier} — {issue.title}")

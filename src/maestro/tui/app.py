@@ -10,6 +10,7 @@ from typing import Any
 import questionary
 from questionary import Style as QStyle
 from rich import box
+from rich.columns import Columns
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
@@ -79,6 +80,38 @@ BACK_LABEL = "← Back"
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
+
+def _truncate(value: str | None, limit: int) -> str:
+    text = (value or "").strip()
+    if len(text) <= limit:
+        return text or "—"
+    return text[: max(0, limit - 1)].rstrip() + "…"
+
+
+def _state_counts(issues: list[dict]) -> list[tuple[str, int]]:
+    order = ["In Progress", "Todo", "Human Review", "In Review", "Backlog", "Done"]
+    counts: dict[str, int] = {}
+    for issue in issues:
+        state = str(issue.get("state") or "Unknown")
+        counts[state] = counts.get(state, 0) + 1
+    rows: list[tuple[str, int]] = []
+    for state in order:
+        if counts.get(state):
+            rows.append((state, counts[state]))
+    for state, count in sorted(counts.items()):
+        if state not in order:
+            rows.append((state, count))
+    return rows
+
+
+def _issue_choice_label(issue: dict[str, Any], *, include_state: bool = False) -> str:
+    ident = str(issue.get("identifier") or "?")
+    state = str(issue.get("state") or "—")
+    title = _truncate(str(issue.get("title") or ""), 58)
+    if include_state:
+        return f"{ident:<12} [{state:<12}] {title}"
+    return f"{ident:<12} {title}"
+
 def _state_icon(state: str) -> str:
     return STATE_ICONS.get(state.strip().lower(), f"[dim]?[/dim]")
 
@@ -102,12 +135,22 @@ def _clear() -> None:
     os.system("clear" if sys.platform != "win32" else "cls")
 
 
+def _parse_iso8601(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+
+
 # ── Renderers ───────────────────────────────────────────────────────────────
 
 def render_header(console: Console, connected: bool) -> None:
     status = "[green]● connected[/green]" if connected else "[red]● disconnected[/red]"
     header = Text.from_markup(
         f"{LOGO}  [dim]v{__version__}[/dim]  {status}\n"
+        "[dim]Linear issue orchestration, human review, PR submission, and CI merge control[/dim]"
     )
     console.print(header)
 
@@ -117,17 +160,41 @@ def render_stats(console: Console, orch: dict[str, Any], issue_count: int) -> No
     totals = orch.get("totals", {})
     running = counts.get("running", 0)
     retrying = counts.get("retrying", 0)
+    queued = max(issue_count - running, 0)
     secs = totals.get("seconds_running", 0)
 
     grid = Table.grid(padding=(0, 3))
     grid.add_row(
         _stat_cell("ISSUES", str(issue_count), "cyan"),
+        _stat_cell("READY", str(queued), "white"),
         _stat_cell("RUNNING", str(running), "yellow" if running else "dim"),
         _stat_cell("RETRYING", str(retrying), "red" if retrying else "dim"),
         _stat_cell("AGENT TIME", _elapsed(secs), "green"),
     )
     console.print(
         Panel(grid, border_style="bright_black", box=box.HEAVY_EDGE, padding=(0, 1)),
+    )
+
+
+def render_state_summary(console: Console, issues: list[dict]) -> None:
+    rows = _state_counts(issues)
+    if not rows:
+        return
+    grid = Table.grid(expand=True)
+    for _ in rows:
+        grid.add_column(justify="center")
+    grid.add_row(*[
+        Text.from_markup(f"{_state_icon(state)} [bold]{count}[/bold]\n[dim]{state}[/dim]")
+        for state, count in rows
+    ])
+    console.print(
+        Panel(
+            grid,
+            title="[bold]State Summary[/bold]",
+            border_style="bright_black",
+            box=box.HEAVY_EDGE,
+            padding=(0, 1),
+        ),
     )
 
 
@@ -145,13 +212,14 @@ def render_issues(console: Console, issues: list[dict], orch: dict) -> None:
         show_edge=False,
         pad_edge=False,
         expand=True,
+        row_styles=["none", "dim"],
     )
     tbl.add_column("ID", style="cyan", no_wrap=True, width=12)
-    tbl.add_column("State", width=16)
-    tbl.add_column("Pri", width=7)
-    tbl.add_column("Title", ratio=1)
-    tbl.add_column("Labels", style="magenta", width=18)
-    tbl.add_column("Status", width=12, justify="right")
+    tbl.add_column("State", width=16, no_wrap=True)
+    tbl.add_column("Pri", width=6, justify="center")
+    tbl.add_column("Title", ratio=2)
+    tbl.add_column("Labels", ratio=1, style="magenta")
+    tbl.add_column("Runtime", width=18, justify="right", no_wrap=True)
 
     state_order = {"in progress": 0, "todo": 1, "in review": 2, "human review": 3, "backlog": 4, "done": 5}
     pri_order = lambda i: i.get("priority") or 99
@@ -165,36 +233,42 @@ def render_issues(console: Console, issues: list[dict], orch: dict) -> None:
         state = issue.get("state", "?")
         icon = _state_icon(state)
         pri = _fmt_priority(issue.get("priority"))
-        title = issue.get("title", "")
-        labels = ", ".join(issue.get("labels") or [])
+        title = _truncate(issue.get("title", ""), 72)
+        labels = _truncate(", ".join(issue.get("labels") or []), 24)
 
         badge = ""
         if ident in running_ids:
             badge = "[yellow bold]⚡ running[/yellow bold]"
         elif ident in retry_ids:
             badge = "[red]↺ retry[/red]"
+        elif state.strip().lower() == "human review":
+            badge = "[magenta]manual gate[/magenta]"
+        elif state.strip().lower() == "in review":
+            badge = "[blue]ci watch[/blue]"
 
         tbl.add_row(ident, Text.from_markup(f"{icon} {state}"), pri, title, labels, Text.from_markup(badge))
 
     console.print(
-        Panel(tbl, title="[bold]Issues[/bold]", border_style="bright_black", box=box.HEAVY_EDGE),
+        Panel(
+            tbl,
+            title=f"[bold]Issues[/bold] [dim]({len(sorted_issues)})[/dim]",
+            subtitle="[dim]priority-sorted, active work first[/dim]",
+            border_style="bright_black",
+            box=box.HEAVY_EDGE,
+        ),
     )
 
 
-def render_workers(console: Console, orch: dict) -> None:
+def build_workers_panel(orch: dict) -> Panel:
     running = orch.get("running", [])
-    retrying = orch.get("retrying", [])
 
-    if not running and not retrying:
-        console.print(
-            Panel(
-                "[dim]No active workers[/dim]",
-                title="[bold]Workers[/bold]",
-                border_style="bright_black",
-                box=box.HEAVY_EDGE,
-            ),
+    if not running:
+        return Panel(
+            "[dim]No active sessions[/dim]",
+            title="[bold]Workers[/bold]",
+            border_style="bright_black",
+            box=box.HEAVY_EDGE,
         )
-        return
 
     tbl = Table(
         box=box.SIMPLE_HEAVY,
@@ -204,49 +278,86 @@ def render_workers(console: Console, orch: dict) -> None:
         expand=True,
     )
     tbl.add_column("Issue", style="cyan", no_wrap=True, width=12)
-    tbl.add_column("Mode", width=10)
-    tbl.add_column("Turn", width=8)
+    tbl.add_column("Turn", width=6, justify="right")
+    tbl.add_column("Uptime", width=8, justify="right")
     tbl.add_column("Session", width=12)
-    tbl.add_column("Event", ratio=1)
-    tbl.add_column("Uptime", width=10, justify="right")
+    tbl.add_column("Status", ratio=1)
 
     for w in running:
-        sid = (w.get("session_id") or "")[:8] or "—"
-        turn = str(w.get("turn_count", "?"))
-        evt = w.get("last_event") or ""
-        msg = w.get("last_message") or ""
-        display = msg[:60] if msg else evt
-
-        started = w.get("started_at")
-        uptime = ""
-        if started:
-            try:
-                dt = datetime.fromisoformat(started.replace("Z", "+00:00"))
-                uptime = _elapsed((datetime.now(timezone.utc) - dt).total_seconds())
-            except (ValueError, TypeError):
-                pass
-
+        started = _parse_iso8601(w.get("started_at"))
+        uptime = "—"
+        if started is not None:
+            uptime = _elapsed((datetime.now(timezone.utc) - started).total_seconds())
         tbl.add_row(
             w.get("issue_identifier", "?"),
-            "[yellow bold]⚡ run[/yellow bold]",
-            turn,
-            f"[dim]{sid}[/dim]",
-            display,
-            f"[green]{uptime}[/green]",
+            str(w.get("turn_count", 0)),
+            uptime,
+            _truncate(w.get("session_id") or "starting…", 12),
+            _truncate(w.get("last_message") or w.get("last_event") or "starting", 40),
         )
 
-    for r in retrying:
-        tbl.add_row(
-            r.get("issue_identifier", "?"),
-            f"[red]↺ #{r.get('attempt', '?')}[/red]",
-            "—",
-            "—",
-            (r.get("error") or "")[:60],
-            "",
+    return Panel(
+        tbl,
+        title=f"[bold]Workers[/bold] [dim]({len(running)})[/dim]",
+        border_style="bright_black",
+        box=box.HEAVY_EDGE,
+    )
+
+
+def build_recent_work_log_panel(orch: dict) -> Panel:
+    entries: list[tuple[datetime, str, str, str]] = []
+
+    for worker in orch.get("running", []):
+        ident = worker.get("issue_identifier", "?")
+        for item in worker.get("event_history") or []:
+            ts = _parse_iso8601(item.get("timestamp"))
+            if ts is None:
+                continue
+            event = str(item.get("event") or "event")
+            message = str(item.get("message") or "—")[:120]
+            entries.append((ts, ident, event, message))
+
+    for item in orch.get("recent_exits", []):
+        ts = _parse_iso8601(item.get("ended_at"))
+        if ts is None:
+            continue
+        ident = item.get("issue_identifier", "?")
+        reason = str(item.get("reason") or "exit")
+        message = str(item.get("error") or reason)[:120]
+        entries.append((ts, ident, f"exit:{reason}", message))
+
+    entries.sort(key=lambda row: row[0], reverse=True)
+
+    if not entries:
+        return Panel(
+            "[dim]No recent worker activity[/dim]",
+            title="[bold]Recent Work Log[/bold]",
+            border_style="bright_black",
+            box=box.HEAVY_EDGE,
         )
 
-    console.print(
-        Panel(tbl, title="[bold]Workers[/bold]", border_style="bright_black", box=box.HEAVY_EDGE),
+    tbl = Table(
+        box=box.SIMPLE_HEAVY,
+        border_style="bright_black",
+        show_edge=False,
+        pad_edge=False,
+        expand=True,
+        row_styles=["none", "dim"],
+    )
+    tbl.add_column("Time", width=9, style="dim")
+    tbl.add_column("Issue", width=12, style="cyan", no_wrap=True)
+    tbl.add_column("Event", width=18)
+    tbl.add_column("Message", ratio=1)
+
+    for ts, ident, event, message in entries[:20]:
+        tbl.add_row(ts.strftime("%H:%M:%S"), ident, _truncate(event, 18), _truncate(message, 88))
+
+    return Panel(
+        tbl,
+        title="[bold]Recent Work Log[/bold]",
+        subtitle="[dim]latest 20 worker events and exits[/dim]",
+        border_style="bright_black",
+        box=box.HEAVY_EDGE,
     )
 
 
@@ -259,6 +370,21 @@ def render_disconnected(console: Console, url: str) -> None:
             title="[red]Connection Error[/red]",
             border_style="red",
             box=box.DOUBLE_EDGE,
+        ),
+    )
+
+
+def render_footer(console: Console, connected: bool) -> None:
+    if not connected:
+        return
+    console.print(
+        Panel(
+            "[dim]Run issue[/dim] dispatches new work.  "
+            "[dim]Issue detail[/dim] shows workspace context.  "
+            "[dim]E2E Test[/dim] is the human submit gate for issues in Human Review.",
+            border_style="bright_black",
+            box=box.SIMPLE,
+            padding=(0, 1),
         ),
     )
 
@@ -281,7 +407,7 @@ def action_run_issue(
         console.print("[yellow]No dispatchable issues.[/yellow]")
         return
 
-    choices = [f"{i['identifier']}  {i['title'][:50]}" for i in candidates] + [BACK_LABEL]
+    choices = [_issue_choice_label(i) for i in candidates] + [BACK_LABEL]
     answer = questionary.select(
         "Select issue to run:", choices=choices, style=PROMPT_STYLE,
     ).ask()
@@ -365,7 +491,7 @@ def action_move_issue(
         console.print("[yellow]No issues.[/yellow]")
         return
 
-    choices = [f"{i['identifier']}  [{i['state']}]  {i['title'][:40]}" for i in issues] + [BACK_LABEL]
+    choices = [_issue_choice_label(i, include_state=True) for i in issues] + [BACK_LABEL]
     answer = questionary.select(
         "Select issue:", choices=choices, style=PROMPT_STYLE,
     ).ask()
@@ -402,7 +528,7 @@ def action_issue_detail(
         console.print("[yellow]No issues.[/yellow]")
         return
 
-    choices = [f"{i['identifier']}  {i['title'][:50]}" for i in issues] + [BACK_LABEL]
+    choices = [_issue_choice_label(i) for i in issues] + [BACK_LABEL]
     answer = questionary.select(
         "Select issue:", choices=choices, style=PROMPT_STYLE,
     ).ask()
@@ -415,7 +541,11 @@ def action_issue_detail(
         return
 
     running_map = {r["issue_identifier"]: r for r in orch.get("running", []) if "issue_identifier" in r}
+    retry_map = {r["issue_identifier"]: r for r in orch.get("retrying", []) if "issue_identifier" in r}
+    exit_map = {r["issue_identifier"]: r for r in orch.get("recent_exits", []) if "issue_identifier" in r}
     worker = running_map.get(ref)
+    retry = retry_map.get(ref)
+    recent_exit = exit_map.get(ref)
 
     detail = Table.grid(padding=(0, 2))
     detail.add_column(style="dim", width=14)
@@ -448,14 +578,33 @@ def action_issue_detail(
         w_tbl.add_row("Message", (worker.get("last_message") or "—")[:80])
         parts.append(Panel(w_tbl, title="[yellow]Active Worker[/yellow]", border_style="yellow", box=box.ROUNDED))
 
+    if retry:
+        r_tbl = Table.grid(padding=(0, 2))
+        r_tbl.add_column(style="dim", width=14)
+        r_tbl.add_column()
+        r_tbl.add_row("Retry attempt", str(retry.get("attempt", "—")))
+        r_tbl.add_row("Error", (retry.get("error") or "—")[:160])
+        parts.append(Panel(r_tbl, title="[red]Retry Status[/red]", border_style="red", box=box.ROUNDED))
+
+    if recent_exit and not worker:
+        x_tbl = Table.grid(padding=(0, 2))
+        x_tbl.add_column(style="dim", width=14)
+        x_tbl.add_column()
+        x_tbl.add_row("Result", recent_exit.get("reason", "—"))
+        x_tbl.add_row("Turns", str(recent_exit.get("turn_count", 0)))
+        x_tbl.add_row("Session", (recent_exit.get("session_id") or "—")[:12])
+        x_tbl.add_row("Error", (recent_exit.get("error") or "—")[:160])
+        parts.append(Panel(x_tbl, title="[bold]Recent Exit[/bold]", border_style="bright_black", box=box.ROUNDED))
+
     console.print(Panel(
         parts[0],
         title=f"[bold]{ref}[/bold]",
+        subtitle="[dim]issue review snapshot[/dim]",
         border_style="cyan",
         box=box.DOUBLE_EDGE,
     ))
-    for p in parts[1:]:
-        console.print(p)
+    if len(parts) > 1:
+        console.print(Columns(parts[1:], equal=True, expand=True))
 
     _pause()
 
@@ -475,10 +624,7 @@ def action_e2e_test(
         _pause()
         return
 
-    choices = [
-        f"{i['identifier']}  {i['title'][:50]}"
-        for i in candidates
-    ] + [BACK_LABEL]
+    choices = [_issue_choice_label(i) for i in candidates] + [BACK_LABEL]
     answer = questionary.select(
         "Select issue to test:", choices=choices, style=PROMPT_STYLE,
     ).ask()
@@ -496,6 +642,7 @@ def action_e2e_test(
     detail.add_row("Identifier", f"[cyan bold]{issue['identifier']}[/cyan bold]")
     detail.add_row("Title", issue.get("title", ""))
     detail.add_row("State", f"{_state_icon('human review')} Human Review")
+    detail.add_row("Next step", "Submit reviewed branch and advance workflow")
     if issue.get("url"):
         detail.add_row("Linear URL", f"[link={issue['url']}]{issue['url']}[/link]")
 
@@ -506,12 +653,13 @@ def action_e2e_test(
         box=box.DOUBLE_EDGE,
     ))
     console.print()
-    console.print("[dim]Run your local end-to-end tests, then report the result below.[/dim]")
+    console.print("[dim]Run local end-to-end checks in the preserved workspace, then record the review result below.[/dim]")
+    console.print("[dim]Pass will submit the branch, create or update the PR, then either wait for CI or merge automatically.[/dim]")
     console.print()
 
     verdict = questionary.select(
         "Test result:",
-        choices=["✅ Pass — move to Done", "❌ Fail — send back for fix", BACK_LABEL],
+        choices=["✅ Pass — submit PR / merge", "❌ Fail — send back for fix", BACK_LABEL],
         style=PROMPT_STYLE,
     ).ask()
 
@@ -520,20 +668,37 @@ def action_e2e_test(
 
     if "Pass" in verdict:
         try:
-            try:
-                result = client.mark_pr_ready(ref)
-                pr_num = result.get("pr_number", "?")
-                console.print(f"[green]✓ Draft PR #{pr_num} marked as ready for review[/green]")
-            except Exception as pr_exc:
-                console.print(f"[yellow]⚠ Could not mark PR as ready: {pr_exc}[/yellow]")
-
-            client.set_state(ref, "Done")
-            client.add_comment(
-                ref,
-                "**E2E Test Passed** ✅\n\nManual end-to-end testing completed successfully. "
-                "Draft PR has been marked as ready for review. Moving to Done.",
-            )
-            console.print(f"[green]✓ {ref} → Done (E2E passed)[/green]")
+            result = client.submit_review(ref, "Manual end-to-end testing completed successfully.")
+            pr_num = result.get("pr_number", "?")
+            pr_url = result.get("html_url", "")
+            branch = result.get("branch", "?")
+            committed = result.get("committed", False)
+            bootstrap_only = bool(result.get("bootstrap_only", False))
+            bootstrap_reason = (result.get("bootstrap_reason") or "").strip()
+            awaiting_ci = bool(result.get("awaiting_ci", False))
+            target_state = result.get("state") or "Done"
+            result_grid = Table.grid(padding=(0, 2))
+            result_grid.add_column(style="dim", width=14)
+            result_grid.add_column()
+            result_grid.add_row("Issue", ref)
+            result_grid.add_row("Branch", branch)
+            result_grid.add_row("Commit", "created and pushed" if committed else "no new local code changes")
+            if bootstrap_only:
+                result_grid.add_row("PR", "skipped")
+            else:
+                result_grid.add_row("PR", f"#{pr_num}" + (f"  {pr_url}" if pr_url else ""))
+            result_grid.add_row("Workflow", f"{target_state}" + (" (waiting for CI)" if awaiting_ci else ""))
+            console.print(Panel(
+                result_grid,
+                title=f"[bold green]Submission Complete[/bold green]",
+                border_style="green",
+                box=box.ROUNDED,
+            ))
+            if bootstrap_only:
+                message = bootstrap_reason or "Remote repository is still in bootstrap state; no PR was created for this submission."
+                console.print(f"[yellow]• {message}[/yellow]")
+            elif bootstrap_reason:
+                console.print(f"[dim]{bootstrap_reason}[/dim]")
         except Exception as exc:
             console.print(f"[red]Error: {exc}[/red]")
     else:
@@ -585,6 +750,9 @@ def run_tui(url: str = "http://127.0.0.1:8080") -> None:
                     orch = client.orchestrator()
                 except Exception:
                     orch = {}
+            else:
+                issues = []
+                orch = {}
 
             _clear()
             render_header(console, connected)
@@ -594,8 +762,14 @@ def run_tui(url: str = "http://127.0.0.1:8080") -> None:
                 action_list = ACTIONS_DISCONNECTED
             else:
                 render_stats(console, orch, len(issues))
+                render_state_summary(console, issues)
                 render_issues(console, issues, orch)
-                render_workers(console, orch)
+                console.print(Columns(
+                    [build_workers_panel(orch), build_recent_work_log_panel(orch)],
+                    equal=True,
+                    expand=True,
+                ))
+                render_footer(console, connected)
                 action_list = ACTIONS_ALL
 
             console.print()

@@ -7,6 +7,57 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
+MAX_EVENT_HISTORY = 80
+MAX_RECENT_EXITS = 20
+
+
+@dataclass
+class EventEntry:
+    """One recent worker event for TUI/debug visibility."""
+
+    timestamp: datetime
+    event: str
+    message: str = ""
+    session_id: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "timestamp": self.timestamp.isoformat(),
+            "event": self.event,
+            "message": self.message,
+            "session_id": self.session_id,
+        }
+
+
+@dataclass
+class ExitEntry:
+    """Recently finished worker retained for post-mortem visibility."""
+
+    issue_id: str
+    identifier: str
+    issue_state: str
+    reason: str
+    error: str | None
+    started_at: datetime
+    ended_at: datetime
+    turn_count: int = 0
+    session_id: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        runtime_s = max((self.ended_at - self.started_at).total_seconds(), 0.0)
+        return {
+            "issue_id": self.issue_id,
+            "issue_identifier": self.identifier,
+            "state": self.issue_state,
+            "reason": self.reason,
+            "error": self.error,
+            "session_id": self.session_id,
+            "turn_count": self.turn_count,
+            "started_at": self.started_at.isoformat(),
+            "ended_at": self.ended_at.isoformat(),
+            "runtime_seconds": round(runtime_s, 1),
+        }
+
 
 @dataclass
 class RunningEntry:
@@ -24,6 +75,7 @@ class RunningEntry:
     last_message: str | None = None
     started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     retry_attempt: int | None = None
+    event_history: list[EventEntry] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -36,6 +88,7 @@ class RunningEntry:
             "last_message": self.last_message,
             "started_at": self.started_at.isoformat() if self.started_at else None,
             "last_event_at": self.last_event_at.isoformat() if self.last_event_at else None,
+            "event_history": [e.to_dict() for e in self.event_history],
         }
 
 
@@ -86,6 +139,7 @@ class OrchestratorState:
         self.completed: set[str] = set()
         self._cooldowns: dict[str, datetime] = {}
         self.totals = AgentTotals()
+        self.recent_exits: list[ExitEntry] = []
 
     def add_running(self, entry: RunningEntry) -> None:
         with self._lock:
@@ -160,8 +214,32 @@ class OrchestratorState:
                 entry.last_message = message
             if session_id:
                 entry.session_id = session_id
+            entry.event_history.append(EventEntry(
+                timestamp=entry.last_event_at,
+                event=event,
+                message=message,
+                session_id=session_id or entry.session_id,
+            ))
+            if len(entry.event_history) > MAX_EVENT_HISTORY:
+                entry.event_history = entry.event_history[-MAX_EVENT_HISTORY:]
             if event == "turn_completed":
                 entry.turn_count += 1
+
+    def record_exit(self, entry: RunningEntry, *, reason: str, error: str | None) -> None:
+        with self._lock:
+            self.recent_exits.insert(0, ExitEntry(
+                issue_id=entry.issue_id,
+                identifier=entry.identifier,
+                issue_state=entry.issue_state,
+                reason=reason,
+                error=error,
+                started_at=entry.started_at,
+                ended_at=datetime.now(timezone.utc),
+                turn_count=entry.turn_count,
+                session_id=entry.session_id,
+            ))
+            if len(self.recent_exits) > MAX_RECENT_EXITS:
+                self.recent_exits = self.recent_exits[:MAX_RECENT_EXITS]
 
     def add_runtime_seconds(self, seconds: float) -> None:
         with self._lock:
@@ -195,5 +273,6 @@ class OrchestratorState:
                 },
                 "running": [e.to_dict() for e in self.running.values()],
                 "retrying": [e.to_dict() for e in self.retry_attempts.values()],
+                "recent_exits": [e.to_dict() for e in self.recent_exits],
                 "totals": totals,
             }
