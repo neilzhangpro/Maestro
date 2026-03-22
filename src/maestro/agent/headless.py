@@ -275,90 +275,107 @@ class HeadlessRunner:
         cancel_event: threading.Event | None = None,
     ) -> TurnResult:
         session_id = ""
-        last_activity = time.monotonic()
+        # Use a list so the watchdog closure can see updates from the reader loop.
+        activity = [time.monotonic()]
         start_time = time.monotonic()
         stall_timeout_s = self.config.stall_timeout_ms / 1000
         turn_timeout_s = self.config.turn_timeout_ms / 1000
         output_parts: list[str] = []
+        stop_watchdog = threading.Event()
+
+        # Compute watchdog poll interval: ~¼ of the smallest active timeout,
+        # clamped to [0.5, 5.0] seconds.
+        _active_timeouts = [t for t in (stall_timeout_s, turn_timeout_s) if t > 0]
+        check_interval = max(0.5, min((min(_active_timeouts) / 4 if _active_timeouts else 5.0), 5.0))
+
+        def _watchdog() -> None:
+            """Daemon thread: kills the process on stall / turn-timeout / cancel.
+
+            This runs independently of the NDJSON reader loop, so timeouts fire
+            even when the subprocess produces no output at all.
+            """
+            while not stop_watchdog.wait(timeout=check_interval):
+                if cancel_event and cancel_event.is_set():
+                    log.warning("Watchdog: cancel requested — killing agent process.")
+                    process.kill()
+                    return
+                if stall_timeout_s > 0 and (time.monotonic() - activity[0]) > stall_timeout_s:
+                    log.warning("Watchdog: agent stalled — killing process.")
+                    process.kill()
+                    return
+                if turn_timeout_s > 0 and (time.monotonic() - start_time) > turn_timeout_s:
+                    log.warning("Watchdog: agent turn timeout — killing process.")
+                    process.kill()
+                    return
+
+        watchdog_thread = threading.Thread(
+            target=_watchdog, daemon=True, name="agent-watchdog",
+        )
+        watchdog_thread.start()
 
         assert process.stdout is not None
 
-        for line in process.stdout:
-            stripped = line.strip()
-            if not stripped:
-                continue
+        try:
+            for line in process.stdout:
+                stripped = line.strip()
+                if not stripped:
+                    continue
 
-            last_activity = time.monotonic()
-            event = self._try_parse_json(stripped)
-            if event is None:
-                continue
+                activity[0] = time.monotonic()
+                event = self._try_parse_json(stripped)
+                if event is None:
+                    continue
 
-            self._forward_event(event, on_event)
+                self._forward_event(event, on_event)
 
-            etype = event.get("type")
+                etype = event.get("type")
 
-            if etype == "system" and event.get("subtype") == "init":
-                session_id = event.get("session_id", "")
-                log.info(
-                    "Agent session started: sid=%s model=%s",
-                    session_id, event.get("model", "?"),
-                )
+                if etype == "system" and event.get("subtype") == "init":
+                    session_id = event.get("session_id", "")
+                    log.info(
+                        "Agent session started: sid=%s model=%s",
+                        session_id, event.get("model", "?"),
+                    )
 
-            elif etype == "assistant":
-                for c in event.get("message", {}).get("content", []):
-                    if c.get("type") == "text":
-                        output_parts.append(c["text"])
+                elif etype == "assistant":
+                    for c in event.get("message", {}).get("content", []):
+                        if c.get("type") == "text":
+                            output_parts.append(c["text"])
 
-            elif etype == "result":
-                self._wait_process(process)
-                return TurnResult(
-                    session_id=event.get("session_id", session_id),
-                    duration_ms=event.get("duration_ms", 0),
-                    success=(event.get("subtype") == "success"),
-                    output_text="".join(output_parts),
-                )
+                elif etype == "result":
+                    self._wait_process(process)
+                    return TurnResult(
+                        session_id=event.get("session_id", session_id),
+                        duration_ms=event.get("duration_ms", 0),
+                        success=(event.get("subtype") == "success"),
+                        output_text="".join(output_parts),
+                    )
 
-            if _is_user_input_required(event):
-                log.warning("Agent requested user input — killing process (hard failure).")
-                process.kill()
-                return TurnResult(
-                    session_id=session_id, duration_ms=0,
-                    success=False, output_text="".join(output_parts),
-                    error="turn_input_required",
-                )
-
-            if self._check_stall(last_activity, stall_timeout_s):
-                log.warning("Agent stalled — killing process.")
-                process.kill()
-                return TurnResult(
-                    session_id=session_id, duration_ms=0,
-                    success=False, output_text="".join(output_parts),
-                    error="stall_timeout",
-                )
-
-            if self._check_turn_timeout(start_time, turn_timeout_s):
-                log.warning("Turn timeout — killing process.")
-                process.kill()
-                return TurnResult(
-                    session_id=session_id, duration_ms=0,
-                    success=False, output_text="".join(output_parts),
-                    error="turn_timeout",
-                )
-
-            if cancel_event and cancel_event.is_set():
-                log.warning("Cancel requested — killing process.")
-                process.kill()
-                return TurnResult(
-                    session_id=session_id, duration_ms=0,
-                    success=False, output_text="".join(output_parts),
-                    error="cancelled_by_user",
-                )
+                if _is_user_input_required(event):
+                    log.warning("Agent requested user input — killing process (hard failure).")
+                    process.kill()
+                    return TurnResult(
+                        session_id=session_id, duration_ms=0,
+                        success=False, output_text="".join(output_parts),
+                        error="turn_input_required",
+                    )
+        finally:
+            stop_watchdog.set()
 
         self._wait_process(process)
         stderr_tail = self._read_stderr(process)
+        # Determine whether the process was killed by the watchdog.
+        elapsed_ms = int((time.monotonic() - start_time) * 1000)
+        if process.returncode is not None and process.returncode < 0:
+            idle_s = time.monotonic() - activity[0]
+            error = "stall_timeout" if (stall_timeout_s > 0 and idle_s >= stall_timeout_s) else "turn_timeout"
+            return TurnResult(
+                session_id=session_id, duration_ms=elapsed_ms,
+                success=False, output_text="".join(output_parts), error=error,
+            )
         return TurnResult(
             session_id=session_id,
-            duration_ms=int((time.monotonic() - start_time) * 1000),
+            duration_ms=elapsed_ms,
             success=(process.returncode == 0),
             output_text="".join(output_parts),
             error=f"process_exit({process.returncode}): {stderr_tail}" if process.returncode else None,

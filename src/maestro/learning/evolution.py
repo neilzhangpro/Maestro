@@ -78,13 +78,17 @@ class EvolutionLoop:
         # State tracking
         self._last_cycle_time: float = 0.0
         self._last_cycle_run_count: int = self._count_successful_runs()
+        self._bg_thread: threading.Thread | None = None
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
     def maybe_evolve(self, running_count: int = 0) -> None:
-        """Run an evolution cycle if conditions are met.
+        """Trigger an evolution cycle in a background thread if conditions are met.
+
+        Returns immediately; the actual cycle runs in a daemon thread so it
+        does not block the Scheduler tick loop.
 
         Parameters
         ----------
@@ -96,13 +100,34 @@ class EvolutionLoop:
             return
         if running_count > 0:
             return
-        if not self._lock.acquire(blocking=False):
-            log.debug("EvolutionLoop: cycle already running — skipping.")
+        if not self._should_trigger():
             return
-        try:
-            self._maybe_evolve_locked()
-        finally:
-            self._lock.release()
+        if self._bg_thread is not None and self._bg_thread.is_alive():
+            log.debug("EvolutionLoop: background cycle still running — skipping.")
+            return
+        # Quick non-blocking lock probe to avoid spawning a thread that will
+        # immediately bail out due to a concurrent cycle.
+        if not self._lock.acquire(blocking=False):
+            log.debug("EvolutionLoop: lock held — skipping.")
+            return
+        self._lock.release()
+
+        def _run_in_bg() -> None:
+            if not self._lock.acquire(blocking=False):
+                log.debug("EvolutionLoop: bg thread could not acquire lock — skipping.")
+                return
+            try:
+                self._maybe_evolve_locked()
+            except Exception:
+                log.warning("EvolutionLoop: cycle failed in background.", exc_info=True)
+            finally:
+                self._lock.release()
+
+        self._bg_thread = threading.Thread(
+            target=_run_in_bg, name="evolution-loop", daemon=True,
+        )
+        self._bg_thread.start()
+        log.debug("EvolutionLoop: started background evolution thread.")
 
     def reload_config(self, service_config: "ServiceConfig") -> None:
         """Apply hot-reloaded configuration."""

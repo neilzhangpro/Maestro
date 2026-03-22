@@ -98,6 +98,21 @@ class LinearClient:
     def __exit__(self, *_: object) -> None:
         self.close()
 
+    @classmethod
+    def from_tracker_config(cls, tracker: Any) -> "LinearClient":
+        """Construct a LinearClient directly from a TrackerConfig."""
+        cfg = LinearConfig(
+            api_key=tracker.api_key,
+            api_url=tracker.endpoint,
+            project_slug=tracker.project_slug or None,
+            team_id=tracker.team_id,
+            assignee=tracker.assignee,
+            active_states=tracker.active_states,
+            terminal_states=tracker.terminal_states,
+            timeout_s=tracker.timeout_s,
+        )
+        return cls(cfg)
+
     def fetch_issue(self, issue_ref: str) -> Issue:
         identifier_match = re.fullmatch(r"([A-Z][A-Z0-9_]*)-(\d+)", issue_ref.strip())
         if identifier_match:

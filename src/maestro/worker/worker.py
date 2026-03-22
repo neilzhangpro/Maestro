@@ -75,6 +75,7 @@ class Worker:
         # Accumulated tool-call steps for the current run (reset each run)
         self._flow_steps: list[FlowStep] = []
         self._flow_seq: int = 0
+        self._linear = LinearClient.from_tracker_config(config.tracker)
 
     def cancel(self) -> None:
         """Request cancellation — kills the agent subprocess and stops the run loop."""
@@ -236,6 +237,8 @@ class Worker:
         except Exception as exc:
             log.exception("Worker %s: unexpected error", self.issue.identifier)
             self._on_exit(issue_id, "abnormal", str(exc))
+        finally:
+            self._linear.close()
 
     def _build_prompt(
         self, issue: Issue, attempt: int | None, turn: int, max_turns: int,
@@ -330,24 +333,22 @@ class Worker:
 
     def _refresh_issue_state(self, issue_id: str) -> Issue | None:
         try:
-            tracker_cfg = self.config.tracker
-            with LinearClient(_to_linear_config(tracker_cfg)) as client:
-                states = client.fetch_issue_states_by_ids([issue_id])
-                if not states:
-                    return None
-                mini = states[0]
-                return Issue(
-                    id=mini.id,
-                    identifier=mini.identifier or self.issue.identifier,
-                    title=self.issue.title,
-                    description=self.issue.description,
-                    state=mini.state,
-                    state_id=mini.state_id,
-                    team_key=self.issue.team_key,
-                    priority=self.issue.priority,
-                    labels=self.issue.labels,
-                    url=self.issue.url,
-                )
+            states = self._linear.fetch_issue_states_by_ids([issue_id])
+            if not states:
+                return None
+            mini = states[0]
+            return Issue(
+                id=mini.id,
+                identifier=mini.identifier or self.issue.identifier,
+                title=self.issue.title,
+                description=self.issue.description,
+                state=mini.state,
+                state_id=mini.state_id,
+                team_key=self.issue.team_key,
+                priority=self.issue.priority,
+                labels=self.issue.labels,
+                url=self.issue.url,
+            )
         except Exception:
             log.warning("Failed to refresh issue state for %s", issue_id, exc_info=True)
             return None
@@ -413,16 +414,3 @@ def _extract_skill_name(tool_path: str) -> str | None:
     return None
 
 
-def _to_linear_config(t: TrackerConfig):
-    """Adapt TrackerConfig → legacy LinearConfig for the existing client."""
-    from maestro.config import LinearConfig
-    return LinearConfig(
-        api_key=t.api_key,
-        api_url=t.endpoint,
-        project_slug=t.project_slug or None,
-        team_id=t.team_id,
-        assignee=t.assignee,
-        active_states=t.active_states,
-        terminal_states=t.terminal_states,
-        timeout_s=t.timeout_s,
-    )

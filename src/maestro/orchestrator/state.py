@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import json
+import logging
+import os
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
+
+log = logging.getLogger(__name__)
 
 MAX_EVENT_HISTORY = 80
 MAX_RECENT_EXITS = 20
@@ -131,8 +137,9 @@ class OrchestratorState:
     All mutations go through methods that hold ``_lock``.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, persist_path: Path | None = None) -> None:
         self._lock = threading.Lock()
+        self._persist_path = persist_path
         self.running: dict[str, RunningEntry] = {}
         self.claimed: set[str] = set()
         self.retry_attempts: dict[str, RetryEntry] = {}
@@ -140,6 +147,58 @@ class OrchestratorState:
         self._cooldowns: dict[str, datetime] = {}
         self.totals = AgentTotals()
         self.recent_exits: list[ExitEntry] = []
+        self._load_state()
+
+    # ------------------------------------------------------------------
+    # Persistence helpers
+    # ------------------------------------------------------------------
+
+    def _load_state(self) -> None:
+        """Restore cooldown state from disk (called once during __init__)."""
+        if self._persist_path is None or not self._persist_path.exists():
+            return
+        try:
+            with open(self._persist_path, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            now = datetime.now(timezone.utc)
+            loaded = 0
+            for issue_id, ts_str in data.get("cooldowns", {}).items():
+                ts = datetime.fromisoformat(ts_str)
+                elapsed = (now - ts).total_seconds()
+                if elapsed < COOLDOWN_SECONDS:
+                    self._cooldowns[issue_id] = ts
+                    self.completed.add(issue_id)
+                    loaded += 1
+            log.info(
+                "OrchestratorState: loaded %d active cooldown(s) from %s",
+                loaded, self._persist_path,
+            )
+        except Exception:
+            log.warning(
+                "OrchestratorState: failed to load persisted state — starting fresh.",
+                exc_info=True,
+            )
+
+    def _persist_state(self) -> None:
+        """Write cooldowns to disk atomically. Must be called while holding _lock."""
+        if self._persist_path is None:
+            return
+        data = {
+            "cooldowns": {k: v.isoformat() for k, v in self._cooldowns.items()},
+            "completed": list(self.completed),
+            "persisted_at": datetime.now(timezone.utc).isoformat(),
+        }
+        tmp = self._persist_path.with_suffix(".tmp")
+        try:
+            tmp.parent.mkdir(parents=True, exist_ok=True)
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(data, fh)
+            os.replace(tmp, self._persist_path)
+        except Exception:
+            log.warning(
+                "OrchestratorState: could not persist state to %s.",
+                self._persist_path, exc_info=True,
+            )
 
     def add_running(self, entry: RunningEntry) -> None:
         with self._lock:
@@ -167,6 +226,7 @@ class OrchestratorState:
             self.retry_attempts.pop(issue_id, None)
             self.completed.add(issue_id)
             self._cooldowns[issue_id] = datetime.now(timezone.utc)
+            self._persist_state()
 
     def in_cooldown(self, issue_id: str) -> bool:
         with self._lock:

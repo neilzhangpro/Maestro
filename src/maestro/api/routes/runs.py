@@ -42,21 +42,10 @@ def trigger_run(body: TriggerRequest) -> dict[str, Any]:
     if _scheduler is None or _config is None:
         raise HTTPException(500, "Server not initialised")
 
-    from maestro.config import LinearConfig
     from maestro.linear.client import LinearClient, LinearError
 
-    lc = LinearConfig(
-        api_key=_config.tracker.api_key,
-        api_url=_config.tracker.endpoint,
-        project_slug=_config.tracker.project_slug or None,
-        team_id=_config.tracker.team_id,
-        assignee=_config.tracker.assignee,
-        active_states=_config.tracker.active_states,
-        terminal_states=_config.tracker.terminal_states,
-        timeout_s=_config.tracker.timeout_s,
-    )
     try:
-        with LinearClient(lc) as client:
+        with LinearClient.from_tracker_config(_config.tracker) as client:
             issue = client.fetch_issue(body.issue_id)
     except LinearError as exc:
         raise HTTPException(404, str(exc)) from exc

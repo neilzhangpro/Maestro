@@ -51,11 +51,11 @@ maestro workspace rm <issue_id>    # Delete workspace
 ## Architecture
 
 ```
-Linear Issues → Scheduler → Pipeline Engine → Agent Runner → Isolated Workspace
-                    ↓              ↓                              ↓
-              CI Watcher    parse → execute → update_linear    OpenSandbox Tests
-                    ↓                                              ↓
-              State Transitions ←─────────── Test Results ────────┘
+Linear Issues → Scheduler → Worker → Agent Runner → Isolated Workspace
+                    ↓          ↓                          ↓
+              CI Watcher   multi-turn              OpenSandbox Tests
+                    ↓       loop                         ↓
+              State Transitions ←──── Test Results ──────┘
 ```
 
 ### Key Components
@@ -63,35 +63,36 @@ Linear Issues → Scheduler → Pipeline Engine → Agent Runner → Isolated Wo
 | Module | Path | Purpose |
 |--------|------|---------|
 | Scheduler | `src/maestro/orchestrator/scheduler.py` | Main loop: polls Linear, dispatches workers, reconciles state |
-| Worker | `src/maestro/worker/worker.py` | Per-issue multi-turn execution pipeline |
-| Pipeline | `src/maestro/graph/graph.py` | Sequential: parse_issue → execute_task → update_linear |
-| Headless Runner | `src/maestro/agent/headless.py` | Cursor ACP CLI launcher |
-| Claude Code Runner | `src/maestro/agent/claude_code.py` | Claude Code CLI launcher |
+| OrchestratorState | `src/maestro/orchestrator/state.py` | Thread-safe runtime state; cooldowns persisted to `.maestro/orchestrator_state.json` |
+| Worker | `src/maestro/worker/worker.py` | Per-issue multi-turn execution pipeline; reuses a single LinearClient |
+| Headless Runner | `src/maestro/agent/headless.py` | Cursor ACP CLI launcher with watchdog thread for stall/timeout |
+| Claude Code Runner | `src/maestro/agent/claude_code.py` | Claude Code CLI launcher with watchdog thread for stall/timeout |
 | Linear Client | `src/maestro/linear/client.py` | GraphQL API for issue fetching/updating |
 | GitHub Client | `src/maestro/github/client.py` | PR creation, CI status checks |
 | Workspace Manager | `src/maestro/workspace/manager.py` | Per-issue directory lifecycle, hook execution |
 | TUI | `src/maestro/tui/app.py` | Terminal workbench (rich + questionary) |
-| Skill Evolution | `src/maestro/learning/` | RunRecord, FlowRecord, SkillStore, SkillAnalyser, SkillMutator |
+| Skill Evolution | `src/maestro/learning/` | RunRecord, FlowRecord, SkillStore, SkillAnalyser, SkillMutator (runs in background thread) |
 
 ### Data Flow
 
 1. **Scheduler** picks up issues from Linear (filtered by team/assignee/state)
 2. **Worker** runs the configured backend (Cursor ACP or Claude Code) through multi-turn execution
-3. **Pipeline nodes** parse issue → execute agent → update Linear state
-4. **Workspace hooks** (`after_create`, `before_run`, `after_run`) manage repo clone, rebase, and test execution
-5. **CI Watcher** monitors GitHub Actions and auto-transitions issues based on CI results
-6. **TUI** provides E2E test gate before marking issues Done
+3. **Workspace hooks** (`after_create`, `before_run`, `after_run`) manage repo clone, rebase, and test execution
+4. **CI Watcher** monitors GitHub Actions and auto-transitions issues based on CI results
+5. **TUI** provides E2E test gate before marking issues Done
 
 ### Workspace Structure
 
 Each issue gets an isolated workspace with:
 - `.cursor/rules/` - Cursor rules (5 MDC files)
 - `.cursor/skills/` - Shared skills (5 SKILL.md files)
-- `.cursor/mcp.json` - MCP server config
+- `.cursor/mcp.json` - MCP server config (Linear via `@mseep/linear-mcp`, Playwright, GitHub, etc.)
 - `.claude/mcp.json` - Mirrored for Claude Code
 - `CLAUDE.md` - Aggregated rules for Claude Code
 - `.maestro/run_history.jsonl` - Per-turn execution history
 - `.maestro/flow_history.jsonl` - Tool-call chain capture
+
+The orchestrator also persists cooldown state to `.maestro/orchestrator_state.json` (shared across all workspaces at the workspace root) so completed issues are not re-dispatched after a service restart.
 
 ## Configuration
 
@@ -124,6 +125,14 @@ Todo → In Progress → Draft PR → In Review → Human Review → Done
 - **In Review**: CI Watcher monitoring GitHub Actions
 - **Human Review**: E2E test gate in TUI, workspace preserved
 - Agent pauses on handoff states; workspace preserved for human inspection
+
+## Known Behaviours & Gotchas
+
+- **Empty workspace repo**: Workspaces are initialised with `git init` (no clone). `submit-review` uses `git symbolic-ref --short HEAD` (not `rev-parse`) to read the current branch so it works even before the first commit.
+- **MCP Linear server**: Use `@mseep/linear-mcp` — `@linear/mcp-server` does not exist on npm.
+- **Stall detection**: Both `claude_code.py` and `headless.py` run a daemon watchdog thread. The watchdog kills the subprocess if no stdout activity exceeds `stall_timeout_ms`, or total turn time exceeds `turn_timeout_ms`.
+- **Cooldown persistence**: `OrchestratorState` writes cooldowns atomically to `.maestro/orchestrator_state.json` on `mark_completed()`. Cooldowns older than 600 s are discarded on load.
+- **`make workbench`**: Auto-starts Docker Desktop or OrbStack if the daemon is not running (macOS). Waits up to 60 s for the daemon, then starts services and launches the TUI in the current terminal.
 
 ## Code Conventions
 

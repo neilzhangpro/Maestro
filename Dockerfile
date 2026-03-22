@@ -9,7 +9,7 @@ WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY src/ src/
 
-RUN pip install --no-cache-dir -e .
+RUN pip install --no-cache-dir --timeout 120 --retries 5 -e .
 
 COPY WORKFLOW.md ./
 COPY config/ config/

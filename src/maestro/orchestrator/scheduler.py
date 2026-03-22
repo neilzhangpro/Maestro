@@ -9,7 +9,6 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 from maestro.agent.events import AgentEvent
-from maestro.config import LinearConfig
 from maestro.learning.recorder import RunRecorder
 from maestro.learning.evolution import EvolutionLoop
 from maestro.linear.client import LinearClient
@@ -35,7 +34,8 @@ class Scheduler:
         on_state_change: Callable[[], None] | None = None,
     ) -> None:
         self.config = config
-        self.state = OrchestratorState()
+        _state_path = config.workspace.root / ".maestro" / "orchestrator_state.json"
+        self.state = OrchestratorState(persist_path=_state_path)
         self._on_state_change = on_state_change
 
         self._concurrency = ConcurrencyController(config.agent)
@@ -428,16 +428,7 @@ class Scheduler:
 
     @staticmethod
     def _make_linear_client(config: ServiceConfig) -> LinearClient:
-        return LinearClient(LinearConfig(
-            api_key=config.tracker.api_key,
-            api_url=config.tracker.endpoint,
-            project_slug=config.tracker.project_slug or None,
-            team_id=config.tracker.team_id,
-            assignee=config.tracker.assignee,
-            active_states=config.tracker.active_states,
-            terminal_states=config.tracker.terminal_states,
-            timeout_s=config.tracker.timeout_s,
-        ))
+        return LinearClient.from_tracker_config(config.tracker)
 
 
 def _extract_saved_tokens(payload: Any) -> int:

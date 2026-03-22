@@ -7,7 +7,7 @@ from pathlib import Path
 import typer
 
 from maestro import __version__
-from maestro.config import LinearConfig, load_config
+from maestro.config import load_config
 from maestro.linear.client import LinearClient
 from maestro.workspace.manager import WorkspaceManager
 
@@ -68,7 +68,6 @@ def run_once(
     from maestro.workflow.template import compose_agent_prompt, render_prompt
     from maestro.workspace.hooks import ShellHooks
     from maestro.workspace.manager import WorkspaceManager
-    from maestro.config import LinearConfig
     from maestro.linear.client import LinearClient, LinearError
 
     try:
@@ -78,19 +77,8 @@ def run_once(
         typer.echo(f"Config error: {exc}", err=True)
         raise typer.Exit(1) from exc
 
-    linear_cfg = LinearConfig(
-        api_key=config.tracker.api_key,
-        api_url=config.tracker.endpoint,
-        project_slug=config.tracker.project_slug or None,
-        team_id=config.tracker.team_id,
-        assignee=config.tracker.assignee,
-        active_states=config.tracker.active_states,
-        terminal_states=config.tracker.terminal_states,
-        timeout_s=config.tracker.timeout_s,
-    )
-
     try:
-        with LinearClient(linear_cfg) as client:
+        with LinearClient.from_tracker_config(config.tracker) as client:
             issue = client.fetch_issue(issue_ref)
     except LinearError as exc:
         typer.echo(f"Linear error: {exc}", err=True)
@@ -168,25 +156,16 @@ def list_issues(
     """List candidate Linear issues."""
     if config is not None:
         loaded = load_config(config)
-        linear_cfg = loaded.linear
+        linear_client = LinearClient(loaded.linear)
     else:
         from maestro.workflow.config import ServiceConfig
         from maestro.workflow.loader import load_workflow
 
         wd = load_workflow(workflow)
         service_config = ServiceConfig.from_workflow(wd)
-        linear_cfg = LinearConfig(
-            api_key=service_config.tracker.api_key,
-            api_url=service_config.tracker.endpoint,
-            project_slug=service_config.tracker.project_slug or None,
-            team_id=service_config.tracker.team_id,
-            assignee=service_config.tracker.assignee,
-            active_states=service_config.tracker.active_states,
-            terminal_states=service_config.tracker.terminal_states,
-            timeout_s=service_config.tracker.timeout_s,
-        )
+        linear_client = LinearClient.from_tracker_config(service_config.tracker)
 
-    with LinearClient(linear_cfg) as client:
+    with linear_client as client:
         issues = client.fetch_issues(state_names=state or None)
 
     if not issues:

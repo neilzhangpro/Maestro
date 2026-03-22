@@ -12,7 +12,6 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from maestro.config import LinearConfig
 from maestro.github.client import GitHubError
 from maestro.linear.client import LinearClient, LinearError
 from maestro.workflow.config import ServiceConfig
@@ -28,19 +27,10 @@ def init(config: ServiceConfig) -> None:
     _config = config
 
 
-def _make_linear_config() -> LinearConfig:
+def _linear_client() -> LinearClient:
     if _config is None:
         raise HTTPException(500, "Server not initialised")
-    return LinearConfig(
-        api_key=_config.tracker.api_key,
-        api_url=_config.tracker.endpoint,
-        project_slug=_config.tracker.project_slug or None,
-        team_id=_config.tracker.team_id,
-        assignee=_config.tracker.assignee,
-        active_states=_config.tracker.active_states,
-        terminal_states=_config.tracker.terminal_states,
-        timeout_s=_config.tracker.timeout_s,
-    )
+    return LinearClient.from_tracker_config(_config.tracker)
 
 
 def _issue_dict(i) -> dict[str, Any]:
@@ -72,9 +62,8 @@ class SubmitReview(BaseModel):
 
 @router.get("")
 def list_issues(state: str | None = None) -> list[dict[str, Any]]:
-    lc = _make_linear_config()
     states = [state] if state else None
-    with LinearClient(lc) as client:
+    with _linear_client() as client:
         issues = client.fetch_issues(state_names=states)
     return [_issue_dict(i) for i in issues]
 
@@ -82,23 +71,21 @@ def list_issues(state: str | None = None) -> list[dict[str, Any]]:
 @router.get("/all")
 def list_all_issues() -> list[dict[str, Any]]:
     """List issues across all workflow states."""
-    lc = _make_linear_config()
     assert _config is not None
     all_states = list(dict.fromkeys(
         _config.tracker.active_states
         + _config.tracker.handoff_states
         + ["Backlog"]
     ))
-    with LinearClient(lc) as client:
+    with _linear_client() as client:
         issues = client.fetch_issues(state_names=all_states)
     return [_issue_dict(i) for i in issues]
 
 
 @router.get("/{issue_ref}")
 def get_issue(issue_ref: str) -> dict[str, Any]:
-    lc = _make_linear_config()
     try:
-        with LinearClient(lc) as client:
+        with _linear_client() as client:
             issue = client.fetch_issue(issue_ref)
     except LinearError as exc:
         raise HTTPException(404, str(exc)) from exc
@@ -107,9 +94,8 @@ def get_issue(issue_ref: str) -> dict[str, Any]:
 
 @router.patch("/{issue_ref}/state")
 def update_issue_state(issue_ref: str, body: StateUpdate) -> dict[str, Any]:
-    lc = _make_linear_config()
     try:
-        with LinearClient(lc) as client:
+        with _linear_client() as client:
             issue = client.fetch_issue(issue_ref)
             if not issue.team_key:
                 raise HTTPException(400, "Issue has no team key")
@@ -124,9 +110,8 @@ def update_issue_state(issue_ref: str, body: StateUpdate) -> dict[str, Any]:
 
 @router.post("/{issue_ref}/comment")
 def create_issue_comment(issue_ref: str, body: CommentCreate) -> dict[str, Any]:
-    lc = _make_linear_config()
     try:
-        with LinearClient(lc) as client:
+        with _linear_client() as client:
             issue = client.fetch_issue(issue_ref)
             comment_id = client.create_comment(issue.id, body.body)
     except LinearError as exc:
@@ -144,9 +129,8 @@ def mark_pr_ready(issue_ref: str) -> dict[str, Any]:
     if not gh.token or not gh.owner or not gh.repo:
         raise HTTPException(400, "GitHub configuration incomplete")
 
-    lc = _make_linear_config()
     try:
-        with LinearClient(lc) as client:
+        with _linear_client() as client:
             issue = client.fetch_issue(issue_ref)
     except LinearError as exc:
         raise HTTPException(404, str(exc)) from exc
@@ -181,9 +165,8 @@ def submit_review(issue_ref: str, body: SubmitReview | None = None) -> dict[str,
     if not gh.token or not gh.owner or not gh.repo:
         raise HTTPException(400, "GitHub configuration incomplete")
 
-    lc = _make_linear_config()
     try:
-        with LinearClient(lc) as client:
+        with _linear_client() as client:
             issue = client.fetch_issue(issue_ref)
             if not issue.team_key:
                 raise HTTPException(400, "Issue has no team key")
@@ -330,6 +313,18 @@ def _git(workspace: Path, *args: str) -> str:
 
 
 def _git_current_branch(workspace: Path) -> str:
+    # symbolic-ref works even on repos with no commits yet (unborn HEAD),
+    # unlike rev-parse --abbrev-ref which fails with "ambiguous argument 'HEAD'".
+    proc = subprocess.run(
+        ["git", "symbolic-ref", "--short", "HEAD"],
+        cwd=workspace,
+        text=True,
+        capture_output=True,
+        env=os.environ.copy(),
+    )
+    if proc.returncode == 0:
+        return proc.stdout.strip()
+    # Detached HEAD fallback (post-commit repos only)
     return _git(workspace, "rev-parse", "--abbrev-ref", "HEAD").strip()
 
 
@@ -700,6 +695,10 @@ def _ensure_mainline_branch(
     remote_heads = _git_remote_heads(owner, repo, token)
     target = "main"
     if "main" in remote_heads:
+        # Sync remote main to local so _git_has_common_history compares against
+        # the real remote state, not a stale or locally-created branch.
+        _git_fetch_authenticated(workspace, owner, repo, token, "main")
+        _git(workspace, "branch", "-f", target, "FETCH_HEAD")
         github.set_default_branch(owner, repo, target)
         return target
     if "master" in remote_heads:
